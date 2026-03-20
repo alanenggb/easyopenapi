@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenAPI UI</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <header class="top-menu">
+      <div class="menu-container">
+        <h1 class="app-title">OpenAPI UI</h1>
+        <div class="menu-controls">
+          <select id="config-select" class="config-select">
+            <option value="">Selecione uma configuração</option>
+          </select>
+          <button id="edit-configs-btn" class="edit-configs-btn">Editar Configurações</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <div id="welcome-screen" class="welcome-screen">
+        <h2>Bem-vindo ao OpenAPI UI</h2>
+        <p>Selecione uma configuração no menu superior ou clique em "Editar Configurações" para gerenciar suas APIs.</p>
+      </div>
+    </main>
+
+    <!-- Modal de Configurações -->
+    <div id="config-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Gerenciar Configurações</h2>
+          <button id="close-modal" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+          <section class="add-config-section">
+            <h3>Adicionar Nova Configuração</h3>
+            <form id="config-form" class="config-form">
+              <div class="form-group">
+                <label for="config-name">Nome da Configuração</label>
+                <input id="config-name" type="text" placeholder="Digite o nome..." required />
+              </div>
+              <div class="form-group">
+                <label for="config-url">URL</label>
+                <input id="config-url" type="url" placeholder="Digite a URL da API..." required />
+              </div>
+              <div class="form-group checkbox-group">
+                <input id="config-auth" type="checkbox" />
+                <label for="config-auth">Usar Autenticação Padrão</label>
+              </div>
+              <div class="form-actions">
+                <button type="submit" id="submit-btn">Adicionar Configuração</button>
+                <button type="button" id="cancel-btn" class="hidden">Cancelar</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="configs-list-section">
+            <h3>Configurações Salvas</h3>
+            <div id="configs-list" class="configs-list">
+              <p class="empty-state">Nenhuma configuração adicionada ainda.</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
