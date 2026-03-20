@@ -49,12 +49,66 @@ async fn get_gcloud_token() -> Result<String, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("cmd")
-            .args(&["/C", "gcloud auth print-identity-token"])
-            .output()
-            .await
-            .map_err(|e| format!("Failed to execute gcloud: {}", e))?;
-        return gcloud_output_to_token(output);
+        use std::path::Path;
+        
+        // Caminhos onde o gcloud pode estar instalado no Windows
+        let mut gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        // Tentar obter o username para caminho do AppData
+        if let Ok(username) = env::var("USERNAME") {
+            let user_path = format!(r"C:\Users\{}\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd", username);
+            gcloud_candidates.push(user_path);
+        }
+        
+        let mut diagnostics: Vec<String> = Vec::new();
+        
+        for gcloud_path in &gcloud_candidates {
+            // Verifica se o arquivo existe antes de tentar executar
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            // Executa o comando gcloud diretamente
+            let result = Command::new(gcloud_path)
+                .args(&["auth", "print-identity-token"])
+                .output()
+                .await;
+                
+            match result {
+                Ok(output) if output.status.success() => {
+                    return gcloud_output_to_token(output);
+                }
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    diagnostics.push(format!(
+                        "[{}] exit={} stdout='{}' stderr='{}'",
+                        gcloud_path,
+                        output.status.code().unwrap_or(-1),
+                        stdout,
+                        stderr
+                    ));
+                }
+                Err(e) => {
+                    diagnostics.push(format!("[{}] spawn error: {}", gcloud_path, e));
+                }
+            }
+        }
+        
+        if diagnostics.is_empty() {
+            Err(format!(
+                "gcloud not found. Checked: {}. Ensure Google Cloud SDK is installed.",
+                gcloud_candidates.join(", ")
+            ))
+        } else {
+            Err(format!(
+                "gcloud found but failed. Diagnostics: {}",
+                diagnostics.join(" | ")
+            ))
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
