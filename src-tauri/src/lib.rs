@@ -45,16 +45,95 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 async fn get_gcloud_token() -> Result<String, String> {
     use tokio::process::Command;
-    
-    // Tentar encontrar o gcloud no PATH
-    let gcloud_cmd = find_gcloud_command().await?;
-    
-    let output = Command::new(&gcloud_cmd)
-        .args(&["auth", "print-identity-token"])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute gcloud command '{}': {}", gcloud_cmd, e))?;
+    use std::env;
 
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("cmd")
+            .args(&["/C", "gcloud auth print-identity-token"])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to execute gcloud: {}", e))?;
+        return gcloud_output_to_token(output);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = env::var("HOME").unwrap_or_default();
+
+        // Apps GUI no macOS não herdam o PATH do shell do usuário.
+        // Usamos /bin/sh -c com PATH embutido inline: isso garante que
+        // tanto o script do gcloud quanto o Python que ele invoca
+        // internamente encontrem os binários necessários (via Homebrew etc.).
+        let full_path = format!(
+            "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/google-cloud-sdk/bin:{}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            home
+        );
+
+        // Caminhos onde o gcloud pode estar instalado
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        let mut diagnostics: Vec<String> = Vec::new();
+
+        for gcloud_path in &gcloud_candidates {
+            // Verifica se o binário/symlink existe antes de tentar
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            // Invoca via /bin/sh com PATH embutido. Isso contorna o problema
+            // de o gcloud ser um shell script que precisa resolver symlinks
+            // e encontrar o Python no PATH.
+            let sh_cmd = format!(
+                "PATH=\"{}\" \"{}\" auth print-identity-token",
+                full_path, gcloud_path
+            );
+
+            let result = Command::new("/bin/sh")
+                .args(&["-c", &sh_cmd])
+                .output()
+                .await;
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    return gcloud_output_to_token(output);
+                }
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    diagnostics.push(format!(
+                        "[{}] exit={} stdout='{}' stderr='{}'",
+                        gcloud_path,
+                        output.status.code().unwrap_or(-1),
+                        stdout,
+                        stderr
+                    ));
+                }
+                Err(e) => {
+                    diagnostics.push(format!("[{}] spawn error: {}", gcloud_path, e));
+                }
+            }
+        }
+
+        if diagnostics.is_empty() {
+            Err(format!(
+                "gcloud not found. Checked: {}. Ensure Google Cloud SDK is installed.",
+                gcloud_candidates.join(", ")
+            ))
+        } else {
+            Err(format!(
+                "gcloud found but failed. Diagnostics: {}",
+                diagnostics.join(" | ")
+            ))
+        }
+    }
+}
+
+fn gcloud_output_to_token(output: std::process::Output) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("gcloud command failed: {}", stderr));
@@ -70,35 +149,6 @@ async fn get_gcloud_token() -> Result<String, String> {
     }
 
     Ok(token)
-}
-
-async fn find_gcloud_command() -> Result<String, String> {
-    use tokio::process::Command;
-    use std::env;
-    
-    // Tentar diferentes caminhos onde o gcloud pode estar instalado
-    let mut possible_paths = vec![
-        "gcloud".to_string(), // No PATH
-        r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-        r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-    ];
-    
-    // Tentar obter o username do ambiente
-    if let Ok(username) = env::var("USERNAME") {
-        let user_path = format!(r"C:\Users\{}\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd", username);
-        possible_paths.push(user_path);
-    }
-    
-    for path in possible_paths {
-        // Verificar se o comando existe tentando executar --version
-        if let Ok(output) = Command::new(&path).arg("--version").output().await {
-            if output.status.success() {
-                return Ok(path);
-            }
-        }
-    }
-    
-    Err("gcloud command not found. Please ensure Google Cloud SDK is installed and in PATH.".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
