@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 #[tauri::command]
 async fn fetch_openapi_spec(url: String, use_auth: bool) -> Result<serde_json::Value, String> {
     use reqwest::Client;
@@ -35,6 +37,81 @@ async fn fetch_openapi_spec(url: String, use_auth: bool) -> Result<serde_json::V
         .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
     
     Ok(json)
+}
+
+#[tauri::command]
+async fn toggle_devtools(webview: tauri::WebviewWindow) -> Result<(), String> {
+    // Apenas abre os devtools (não há método confiável para fechar)
+    webview.open_devtools();
+    Ok(())
+}
+
+#[tauri::command]
+async fn make_test_request(url: String, method: String, body: Option<String>, use_auth: bool) -> Result<serde_json::Value, String> {
+    use reqwest::Client;
+    
+    let client = Client::new();
+    let mut request = match method.as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
+        _ => return Err(format!("Unsupported method: {}", method)),
+    };
+    
+    // Adicionar headers de autenticação se necessário
+    if use_auth {
+        match get_gcloud_token().await {
+            Ok(token) => {
+                request = request
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("TokenPortal", token.clone());
+            }
+            Err(e) => {
+                return Err(format!("Failed to get gcloud token: {}", e));
+            }
+        }
+    }
+    
+    // Adicionar body se fornecido
+    let request = if let Some(body_str) = body {
+        request.header("Content-Type", "application/json").body(body_str)
+    } else {
+        request
+    };
+    
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+    
+    let status = response.status();
+    let status_code = status.as_u16();
+    let status_text = status.canonical_reason().unwrap_or("Unknown");
+    
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    
+    let response_data: serde_json::Value = if response_text.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&response_text).unwrap_or_else(|_| serde_json::Value::String(response_text))
+    };
+    
+    // Headers vazios por enquanto, já que não podemos acessar depois de consumir o response
+    let headers = std::collections::HashMap::<&str, &str>::new();
+    
+    let result = serde_json::json!({
+        "status": status_code,
+        "statusText": status_text,
+        "headers": headers,
+        "data": response_data
+    });
+    
+    Ok(result)
 }
 
 #[tauri::command]
@@ -209,7 +286,54 @@ fn gcloud_output_to_token(output: std::process::Output) -> Result<String, String
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec])
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .setup(|app| {
+            let window = app.get_webview_window("main").unwrap();
+            
+            // Restaurar posição e tamanho da janela ao iniciar
+            let store_result = tauri_plugin_store::StoreBuilder::new(app, std::path::PathBuf::from(".window-state.json")).build();
+            
+            if let Ok(store) = store_result {
+                if let Some(state) = store.get("window_state") {
+                    if let Some(x) = state.get("x").and_then(|v: &serde_json::Value| v.as_f64()) {
+                        if let Some(y) = state.get("y").and_then(|v: &serde_json::Value| v.as_f64()) {
+                            if let Some(width) = state.get("width").and_then(|v: &serde_json::Value| v.as_f64()) {
+                                if let Some(height) = state.get("height").and_then(|v: &serde_json::Value| v.as_f64()) {
+                                    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: x as i32, y: y as i32 }));
+                                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: width as u32, height: height as u32 }));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Salvar estado da janela quando mover ou redimensionar
+                let store_clone = store.clone();
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    match event {
+                        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                            if let Ok(pos) = window_clone.outer_position() {
+                                if let Ok(size) = window_clone.outer_size() {
+                                    let state = serde_json::json!({
+                                        "x": pos.x,
+                                        "y": pos.y,
+                                        "width": size.width,
+                                        "height": size.height
+                                    });
+                                    let _ = store_clone.set("window_state", state);
+                                    let _ = store_clone.save();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
