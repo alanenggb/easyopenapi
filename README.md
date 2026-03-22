@@ -40,6 +40,9 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 - **Tratamento de Erros**: Mensagens detalhadas para diferentes tipos de erro
 - **Copiar Resultados**: Botões para copiar headers, body e respostas
 
+### Por que gcloud?
+- Se a sua API requer autenticação com Google Cloud com permissão liberada pelo IAM, a autenticação é feita automaticamente usando o gcloud ao utilizar a opção "Usar Autenticação padrão". Se o teste retornar erro 403, verifique se o usuário tem as permissões necessárias (por exemplo, `roles/run.invoker` para Cloud Run).
+
 ## 📸 Screenshots
 
 ### Configuração da API
@@ -116,19 +119,19 @@ npm run tauri build
 
 ## 🗄️ Armazenamento de Dados
 
-O aplicativo utiliza localStorage para persistência de dados, que é salvo em disco pelo Tauri. Os seguintes dados são armazenados:
+O aplicativo utiliza armazenamento nativo do Tauri (app_data_dir) para persistência de dados, com fallback automático para localStorage. Os seguintes dados são armazenados:
 
-### Chaves de Armazenamento
-- **`openapiui-configurations`**: Configurações de APIs (URL, nome, tipo de autenticação)
-- **`openapiui-saved-sets`**: Conjuntos de parâmetros e body salvos por endpoint
-- **`openapiui-saved-results`**: Histórico completo de testes realizados
-- **`openapiui-theme`**: Preferência de tema (claro/escuro)
+### Estrutura de Armazenamento
+- **Configurações**: Configurações de APIs (URL, nome, tipo de autenticação)
+- **Conjuntos Salvos**: Conjuntos de parâmetros e body salvos por endpoint  
+- **Resultados**: Histórico completo de testes realizados
+- **Tema**: Preferência de tema (claro/escuro - mantido no localStorage)
 
 ### Persistência
-- **Local**: Dados salvos no perfil do usuário no sistema operacional
-- **Permanência**: Persiste entre reinicializações do aplicativo
+- **Principal**: app_data_dir (diretório de dados do aplicativo no sistema operacional)
+- **Fallback**: localStorage (para compatibilidade)
 - **Segurança**: Armazenamento local, sem envio para servidores externos
-- **Formato**: JSON estruturado para fácil exportação/manual
+- **Formato**: JSON estruturado via tauri-plugin-store
 
 ## 🛡 Segurança
 
