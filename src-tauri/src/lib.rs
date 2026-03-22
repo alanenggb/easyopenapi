@@ -282,6 +282,34 @@ fn gcloud_output_to_token(output: std::process::Output) -> Result<String, String
     Ok(token)
 }
 
+#[tauri::command]
+async fn save_app_data(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Result<(), String> {
+    let store_result = tauri_plugin_store::StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    
+    match store_result {
+        Ok(store) => {
+            store.set(&key, value);
+            if let Err(e) = store.save() {
+                return Err(format!("Failed to save store: {}", e));
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to create store: {}", e))
+    }
+}
+
+#[tauri::command]
+async fn load_app_data(app: tauri::AppHandle, key: String) -> Result<Option<serde_json::Value>, String> {
+    let store_result = tauri_plugin_store::StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    
+    match store_result {
+        Ok(store) => {
+            Ok(store.get(&key).map(|v| v.clone()))
+        }
+        Err(e) => Err(format!("Failed to create store: {}", e))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -333,7 +361,7 @@ pub fn run() {
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools])
+        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

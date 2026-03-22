@@ -19,6 +19,7 @@
           <button id="edit-configs-btn" class="edit-configs-btn">Editar Configurações</button>
           <button id="theme-toggle-btn" class="theme-toggle-btn" title="Alternar tema">🌙</button>
           <button id="devtools-btn" class="devtools-btn" title="Abrir DevTools">🔧</button>
+          <button id="about-btn" class="about-btn" title="Sobre">ℹ️</button>
         </div>
       </div>
     </header>
@@ -67,6 +68,46 @@
               <p class="empty-state">Nenhuma configuração adicionada ainda.</p>
             </div>
           </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Sobre -->
+    <div id="about-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Sobre o OpenAPI UI</h2>
+          <button id="close-about-modal" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+          <div class="about-content">
+            <div class="app-info">
+              <h3>OpenAPI UI</h3>
+              <p>Uma interface de usuário para testar e explorar APIs OpenAPI.</p>
+            </div>
+            
+            <div class="project-info">
+              <h4>Informações do Projeto</h4>
+              <p><strong>Open Source:</strong> Este projeto é open source e disponível gratuitamente.</p>
+              <p><strong>Criador:</strong> Alan Ribeiro (@alanenggb)</p>
+              <p><strong>Repositório:</strong> 
+                <a href="https://github.com/alanenggb/openapiui" target="_blank" rel="noopener noreferrer">
+                  https://github.com/alanenggb/openapiui
+                </a>
+              </p>
+            </div>
+            
+            <div class="tech-info">
+              <h4>Tecnologia</h4>
+              <p>Desenvolvido com Tauri, TypeScript e tecnologias web modernas.</p>
+            </div>
+            
+            <div class="license-info">
+              <h4>Licença</h4>
+              <p>Verifique o repositório para informações sobre licenciamento.</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>

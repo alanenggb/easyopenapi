@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src-tauri/tauri.conf.json'
 
 jobs:
   publish:
@@ -23,11 +25,16 @@ jobs:
           node-version: lts/*
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+      
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - name: Install dependencies
+        run: npm install
 
       - name: Install Dependencies (Linux only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -40,8 +47,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: "App v__VERSION__"
+          tagName: openapiui-v__VERSION__
+          releaseName: "OpenAPI UI v__VERSION__"
           releaseDraft: true
-          generateReleaseNotes: true
           prerelease: false

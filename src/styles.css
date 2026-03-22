@@ -96,6 +96,7 @@ body {
   min-width: 200px;
   cursor: pointer;
   transition: border-color 0.25s;
+  appearance: none;
 }
 
 .config-select:focus {
@@ -165,6 +166,28 @@ body {
   transform: translateY(-1px);
 }
 
+.about-btn {
+  background: var(--primary-color);
+  color: white;
+  padding: 0.5rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: all 0.25s;
+  min-width: 44px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.about-btn:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
 /* Ajustes específicos para Dark Mode */
 [data-theme="dark"] .welcome-screen h2 {
   color: #e9ecef;
@@ -198,9 +221,6 @@ body {
   color: #e9ecef;
 }
 
-[data-theme="dark"] .method-summary {
-  color: #e9ecef;
-}
 
 [data-theme="dark"] .query-params h6 {
   color: #e9ecef;
@@ -468,7 +488,6 @@ body {
 .paths-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
 }
 
 .path-item {
@@ -476,7 +495,7 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 0;
-  margin-bottom: 1rem;
+  margin-bottom: 0.3rem;
   overflow: hidden;
 }
 
@@ -494,12 +513,107 @@ body {
   background: var(--background-dark);
 }
 
+.endpoint-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.endpoint-info .method-type {
+  font-weight: 700;
+  font-size: 0.8rem;
+  min-width: 60px;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  text-align: center;
+  flex-shrink: 0;
+  background: #6c757d;
+  color: white;
+}
+
+.endpoint-info .method-type.get { 
+  background: #61affe !important; 
+  color: white !important; 
+}
+
+.endpoint-info .method-type.post { 
+  background: #49cc90 !important; 
+  color: white !important; 
+}
+
+.endpoint-info .method-type.put { 
+  background: #fca130 !important; 
+  color: white !important; 
+}
+
+.endpoint-info .method-type.delete { 
+  background: #f93e3e !important; 
+  color: white !important; 
+}
+
+.endpoint-info .method-type.patch { 
+  background: #50e3c2 !important; 
+  color: white !important; 
+}
+
+/* Fallback para seletores sem o endpoint-info */
+span.method-type.get { 
+  background: #61affe !important; 
+  color: white !important; 
+}
+
+span.method-type.post { 
+  background: #49cc90 !important; 
+  color: white !important; 
+}
+
+span.method-type.put { 
+  background: #fca130 !important; 
+  color: white !important; 
+}
+
+span.method-type.delete { 
+  background: #f93e3e !important; 
+  color: white !important; 
+}
+
+span.method-type.patch { 
+  background: #50e3c2 !important; 
+  color: white !important; 
+}
+
+.endpoint-info .method-summary {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-style: italic;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .endpoint-info .method-summary {
+  color: #adb5bd;
+}
+
 .path-header h6 {
   color: var(--primary-color);
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
   font-family: 'Courier New', monospace;
+}
+
+.method-item .path-header {
+  padding: 0.75rem 1rem;
+}
+
+.method-content {
+  padding: 0 1rem 1rem 1rem;
 }
 
 .expand-icon {
@@ -543,24 +657,11 @@ body {
   background: var(--background-dark);
 }
 
-.method.get { border-left: 4px solid #28a745; }
-.method.post { border-left: 4px solid #007bff; }
-.method.put { border-left: 4px solid #ffc107; }
-.method.delete { border-left: 4px solid #dc3545; }
-.method.patch { border-left: 4px solid #6f42c1; }
-
-.method-type {
-  font-weight: 700;
-  font-size: 0.8rem;
-  min-width: 60px;
-  text-transform: uppercase;
-}
-
-.method.get .method-type { color: #28a745; }
-.method.post .method-type { color: #007bff; }
-.method.put .method-type { color: #ffc107; }
-.method.delete .method-type { color: #dc3545; }
-.method.patch .method-type { color: #6f42c1; }
+.method.get { border-left: 4px solid #61affe; }
+.method.post { border-left: 4px solid #49cc90; }
+.method.put { border-left: 4px solid #fca130; }
+.method.delete { border-left: 4px solid #f93e3e; }
+.method.patch { border-left: 4px solid #50e3c2; }
 
 .method-summary {
   color: #333;
@@ -1513,6 +1614,70 @@ body {
   padding: 2rem;
 }
 
+/* Conteúdo do Modal Sobre */
+.about-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.about-content .app-info {
+  text-align: center;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.about-content .app-info h3 {
+  margin: 0 0 0.5rem 0;
+  color: var(--primary-hover);
+  font-size: 1.8rem;
+}
+
+.about-content .app-info p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.about-content .project-info,
+.about-content .tech-info,
+.about-content .license-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.about-content h4 {
+  margin: 0 0 0.5rem 0;
+  color: var(--primary-color);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.about-content p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.about-content a {
+  color: var(--primary-color);
+  text-decoration: none;
+  transition: color 0.25s;
+}
+
+.about-content a:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+.about-content strong {
+  color: #333;
+}
+
+[data-theme="dark"] .about-content strong {
+  color: #e9ecef;
+}
+
 /* Seções do Modal */
 .add-config-section,
 .configs-list-section {
@@ -1732,7 +1897,33 @@ button {
 
 .toast-error {
   background: #dc3545;
-  border-left: 4px solid #bd2130;
+  border-left: 4px solid #c82333;
+}
+
+/* HTTP Method Colors - Highest Priority */
+span.method-type.get { 
+  background: #61affe !important; 
+  color: white !important; 
+}
+
+span.method-type.post { 
+  background: #49cc90 !important; 
+  color: white !important; 
+}
+
+span.method-type.put { 
+  background: #fca130 !important; 
+  color: white !important; 
+}
+
+span.method-type.delete { 
+  background: #f93e3e !important; 
+  color: white !important; 
+}
+
+span.method-type.patch { 
+  background: #50e3c2 !important; 
+  color: white !important; 
 }
 
 @keyframes slideInRight {

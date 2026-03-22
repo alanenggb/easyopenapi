@@ -77,16 +77,21 @@ class ConfigManager {
     editConfigsBtn: document.querySelector("#edit-configs-btn") as HTMLButtonElement,
     devtoolsBtn: document.querySelector("#devtools-btn") as HTMLButtonElement,
     themeToggleBtn: document.querySelector("#theme-toggle-btn") as HTMLButtonElement,
+    aboutBtn: document.querySelector("#about-btn") as HTMLButtonElement,
     configModal: document.querySelector("#config-modal") as HTMLDivElement,
     closeModalBtn: document.querySelector("#close-modal") as HTMLButtonElement,
+    aboutModal: document.querySelector("#about-modal") as HTMLDivElement,
+    closeAboutModalBtn: document.querySelector("#close-about-modal") as HTMLButtonElement,
     welcomeScreen: document.querySelector("#welcome-screen") as HTMLDivElement,
   };
 
   async init() {
-    this.loadConfigs();
-    this.loadSavedValueSets();
-    this.loadSavedResults();
-    this.loadTheme();
+    await Promise.all([
+      this.loadConfigs(),
+      this.loadSavedValueSets(),
+      this.loadSavedResults(),
+      this.loadTheme()
+    ]);
     this.setupEventListeners();
     this.updateConfigSelect();
     this.renderConfigs();
@@ -94,9 +99,9 @@ class ConfigManager {
 
   private setupEventListeners() {
     // Form de configuração
-    this.elements.configForm.addEventListener("submit", (e) => {
+    this.elements.configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      this.handleSubmit();
+      await this.handleSubmit();
     });
 
     this.elements.cancelBtn.addEventListener("click", () => {
@@ -120,6 +125,15 @@ class ConfigManager {
       this.toggleTheme();
     });
 
+    // Modal Sobre
+    this.elements.aboutBtn.addEventListener("click", () => {
+      this.showAboutModal();
+    });
+
+    this.elements.closeAboutModalBtn.addEventListener("click", () => {
+      this.hideAboutModal();
+    });
+
     this.elements.closeModalBtn.addEventListener("click", () => {
       this.hideModal();
     });
@@ -136,13 +150,37 @@ class ConfigManager {
         this.hideModal();
       }
     });
+
+    // Fechar modal Sobre clicando fora
+    this.elements.aboutModal.addEventListener("click", (e) => {
+      if (e.target === this.elements.aboutModal) {
+        this.hideAboutModal();
+      }
+    });
   }
 
-  private loadConfigs() {
+  private async loadConfigs() {
     try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
-      if (stored) {
-        this.configs = JSON.parse(stored);
+      // Tentar carregar do app_data_dir primeiro
+      try {
+        const stored = await invoke<any>('load_app_data', { key: this.STORAGE_KEY });
+        if (stored) {
+          this.configs = stored;
+        } else {
+          this.configs = [];
+        }
+      } catch (appDataError) {
+        console.warn('Failed to load from app_data_dir, falling back to localStorage:', appDataError);
+        
+        // Fallback para localStorage
+        const stored = localStorage.getItem(this.STORAGE_KEY);
+        if (stored) {
+          this.configs = JSON.parse(stored);
+          // Migrar para app_data_dir
+          await this.saveConfigs();
+        } else {
+          this.configs = [];
+        }
       }
     } catch (error) {
       console.error('Failed to load configurations:', error);
@@ -150,19 +188,46 @@ class ConfigManager {
     }
   }
 
-  private saveConfigs() {
+  private async saveConfigs() {
     try {
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.configs, null, 2));
+      await invoke('save_app_data', { 
+        key: this.STORAGE_KEY, 
+        value: this.configs 
+      });
     } catch (error) {
-      console.error('Failed to save configurations:', error);
+      console.error('Failed to save configurations to app_data_dir:', error);
+      
+      // Fallback para localStorage
+      try {
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.configs, null, 2));
+      } catch (localStorageError) {
+        console.error('Failed to save to localStorage fallback:', localStorageError);
+      }
     }
   }
 
-  private loadSavedValueSets() {
+  private async loadSavedValueSets() {
     try {
-      const stored = localStorage.getItem(this.SAVED_SETS_KEY);
-      if (stored) {
-        this.savedValueSets = JSON.parse(stored);
+      // Tentar carregar do app_data_dir primeiro
+      try {
+        const stored = await invoke<any>('load_app_data', { key: this.SAVED_SETS_KEY });
+        if (stored) {
+          this.savedValueSets = stored;
+        } else {
+          this.savedValueSets = {};
+        }
+      } catch (appDataError) {
+        console.warn('Failed to load from app_data_dir, falling back to localStorage:', appDataError);
+        
+        // Fallback para localStorage
+        const stored = localStorage.getItem(this.SAVED_SETS_KEY);
+        if (stored) {
+          this.savedValueSets = JSON.parse(stored);
+          // Migrar para app_data_dir
+          await this.saveSavedValueSets();
+        } else {
+          this.savedValueSets = {};
+        }
       }
     } catch (error) {
       console.error('Failed to load saved value sets:', error);
@@ -170,19 +235,46 @@ class ConfigManager {
     }
   }
 
-  private saveSavedValueSets() {
+  private async saveSavedValueSets() {
     try {
-      localStorage.setItem(this.SAVED_SETS_KEY, JSON.stringify(this.savedValueSets, null, 2));
+      await invoke('save_app_data', { 
+        key: this.SAVED_SETS_KEY, 
+        value: this.savedValueSets 
+      });
     } catch (error) {
-      console.error('Failed to save saved value sets:', error);
+      console.error('Failed to save saved value sets to app_data_dir:', error);
+      
+      // Fallback para localStorage
+      try {
+        localStorage.setItem(this.SAVED_SETS_KEY, JSON.stringify(this.savedValueSets, null, 2));
+      } catch (localStorageError) {
+        console.error('Failed to save to localStorage fallback:', localStorageError);
+      }
     }
   }
 
-  private loadSavedResults() {
+  private async loadSavedResults() {
     try {
-      const stored = localStorage.getItem(this.SAVED_RESULTS_KEY);
-      if (stored) {
-        this.savedResults = JSON.parse(stored);
+      // Tentar carregar do app_data_dir primeiro
+      try {
+        const stored = await invoke<any>('load_app_data', { key: this.SAVED_RESULTS_KEY });
+        if (stored) {
+          this.savedResults = stored;
+        } else {
+          this.savedResults = {};
+        }
+      } catch (appDataError) {
+        console.warn('Failed to load from app_data_dir, falling back to localStorage:', appDataError);
+        
+        // Fallback para localStorage
+        const stored = localStorage.getItem(this.SAVED_RESULTS_KEY);
+        if (stored) {
+          this.savedResults = JSON.parse(stored);
+          // Migrar para app_data_dir
+          await this.saveSavedResults();
+        } else {
+          this.savedResults = {};
+        }
       }
     } catch (error) {
       console.error('Failed to load saved results:', error);
@@ -190,11 +282,21 @@ class ConfigManager {
     }
   }
 
-  private saveSavedResults() {
+  private async saveSavedResults() {
     try {
-      localStorage.setItem(this.SAVED_RESULTS_KEY, JSON.stringify(this.savedResults, null, 2));
+      await invoke('save_app_data', { 
+        key: this.SAVED_RESULTS_KEY, 
+        value: this.savedResults 
+      });
     } catch (error) {
-      console.error('Failed to save saved results:', error);
+      console.error('Failed to save saved results to app_data_dir:', error);
+      
+      // Fallback para localStorage
+      try {
+        localStorage.setItem(this.SAVED_RESULTS_KEY, JSON.stringify(this.savedResults, null, 2));
+      } catch (localStorageError) {
+        console.error('Failed to save to localStorage fallback:', localStorageError);
+      }
     }
   }
 
@@ -354,33 +456,29 @@ class ConfigManager {
             <h5>Endpoints Disponíveis:</h5>
             <div class="paths-list">
               ${Object.entries(spec.paths)
-                .filter(([, methods]: [string, any]) => {
-                  // Filtrar endpoints que têm "summary": "Root"
-                  return !Object.values(methods).some((method: any) => method.summary === 'Root');
-                })
-                .map(([path, methods]: [string, any]) => `
-                <div class="path-item">
-                  <div class="path-header" onclick="this.parentElement.classList.toggle('expanded')">
-                    <h6>${this.escapeHtml(path)}</h6>
-                    <span class="expand-icon">▶</span>
-                  </div>
-                  <div class="path-content">
-                    <div class="methods">
-                      ${Object.entries(methods).map(([method, details]: [string, any]) => `
-                        <div class="method ${method.toLowerCase()}">
-                          <div class="method-header">
-                            <span class="method-type">${method.toUpperCase()}</span>
-                            <span class="method-summary">${this.escapeHtml(details.summary || details.description || 'No description')}</span>
-                          </div>
-                          <div class="method-test">
-                            ${this.generateTestInterface(method, details, path, spec)}
-                          </div>
+                .map(([path, methods]: [string, any]) => {
+                  // Filtrar apenas os métodos que não têm "summary": "Root"
+                  const filteredMethods = Object.entries(methods).filter(([, details]: [string, any]) => details.summary !== 'Root');
+                  
+                  // Criar itens individuais para cada método
+                  return filteredMethods.map(([method, details]: [string, any]) => `
+                    <div class="path-item method-item">
+                      <div class="path-header" onclick="this.parentElement.classList.toggle('expanded')">
+                        <div class="endpoint-info">
+                          <span class="method-type ${method.toLowerCase()}">${method.toUpperCase()}</span>
+                          <h6>${this.escapeHtml(path)}</h6>
+                          <span class="method-summary">${this.escapeHtml(details.summary || details.description || 'No description')}</span>
                         </div>
-                      `).join('')}
+                        <span class="expand-icon">▶</span>
+                      </div>
+                      <div class="path-content">
+                        <div class="method-test">
+                          ${this.generateTestInterface(method, details, path, spec)}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              `).join('')}
+                  `).join('');
+                }).join('')}
             </div>
           </div>
         ` : ''}
@@ -398,16 +496,14 @@ class ConfigManager {
     // Atualizar selects de conjuntos salvos para todos os endpoints
     const currentConfigId = this.getCurrentConfigId();
     if (currentConfigId && spec.paths) {
-      Object.entries(spec.paths)
-        .filter(([, methods]: [string, any]) => {
-          // Filtrar endpoints que têm "summary": "Root"
-          return !Object.values(methods).some((method: any) => method.summary === 'Root');
-        })
-        .forEach(([path, methods]: [string, any]) => {
-          Object.keys(methods).forEach((method: string) => {
-            this.updateSavedSetsSelect(method, path, currentConfigId);
-          });
+      Object.entries(spec.paths).forEach(([path, methods]: [string, any]) => {
+        // Filtrar apenas os métodos que não têm "summary": "Root"
+        const filteredMethods = Object.entries(methods).filter(([, details]: [string, any]) => details.summary !== 'Root');
+        
+        filteredMethods.forEach(([method]: [string, any]) => {
+          this.updateSavedSetsSelect(method, path, currentConfigId);
         });
+      });
     }
   }
 
@@ -531,7 +627,17 @@ class ConfigManager {
     document.body.style.overflow = '';
   }
 
-  private handleSubmit() {
+  private showAboutModal() {
+    this.elements.aboutModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  private hideAboutModal() {
+    this.elements.aboutModal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  private async handleSubmit() {
     const name = this.elements.nameInput.value.trim();
     const url = this.elements.urlInput.value.trim();
     const useDefaultAuth = this.elements.authCheckbox.checked;
@@ -560,7 +666,7 @@ class ConfigManager {
       this.configs.push(newConfig);
     }
 
-    this.saveConfigs();
+    await this.saveConfigs();
     this.updateConfigSelect();
     this.renderConfigs();
     this.resetForm();
@@ -605,9 +711,9 @@ class ConfigManager {
     });
 
     document.querySelectorAll('.delete-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         const id = (e.target as HTMLElement).dataset.id;
-        if (id) this.deleteConfig(id);
+        if (id) await this.deleteConfig(id);
       });
     });
   }
@@ -626,9 +732,9 @@ class ConfigManager {
     this.elements.nameInput.focus();
   }
 
-  private deleteConfig(id: string) {
+  private async deleteConfig(id: string) {
     this.configs = this.configs.filter(c => c.id !== id);
-    this.saveConfigs();
+    await this.saveConfigs();
     this.updateConfigSelect();
     this.renderConfigs();
   }
@@ -649,14 +755,14 @@ class ConfigManager {
 
     // Adicionar event listeners para salvar conjuntos
     document.querySelectorAll('.save-set-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         const target = e.target as HTMLElement;
         const method = target.dataset.method;
         const path = target.dataset.path;
         const configId = target.dataset.configId;
         
         if (method && path && configId) {
-          this.saveValueSet(method, path, configId);
+          await this.saveValueSet(method, path, configId);
         }
       });
     });
@@ -678,14 +784,14 @@ class ConfigManager {
 
     // Adicionar event listeners para excluir conjuntos
     document.querySelectorAll('.delete-set-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         const target = e.target as HTMLElement;
         const method = target.dataset.method;
         const path = target.dataset.path;
         const configId = target.dataset.configId;
         
         if (method && path && configId) {
-          this.deleteValueSet(method, path, configId);
+          await this.deleteValueSet(method, path, configId);
         }
       });
     });
@@ -703,7 +809,7 @@ class ConfigManager {
     });
   }
 
-  private saveValueSet(method: string, path: string, configId: string) {
+  private async saveValueSet(method: string, path: string, configId: string) {
     const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const nameInput = document.getElementById(`save-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
@@ -765,8 +871,8 @@ class ConfigManager {
       this.showToast('Conjunto de valores salvo com sucesso!', 'success');
     }
     
-    // Salvar no localStorage
-    this.saveSavedValueSets();
+    // Salvar no app_data_dir
+    await this.saveSavedValueSets();
     
     // Manter o nome preenchido (não limpar o input)
     // nameInput.value = ''; // Removido para manter o nome
@@ -823,7 +929,7 @@ class ConfigManager {
     });
   }
 
-  private deleteValueSet(method: string, path: string, configId: string) {
+  private async deleteValueSet(method: string, path: string, configId: string) {
     const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     const selectedId = select?.value;
@@ -854,8 +960,8 @@ class ConfigManager {
     if (index !== -1) {
       sets.splice(index, 1);
       
-      // Salvar no localStorage
-      this.saveSavedValueSets();
+      // Salvar no app_data_dir
+      await this.saveSavedValueSets();
       
       // Limpar o input do nome se estava preenchido com o nome do conjunto excluído
       const nameInput = document.getElementById(`save-name-${method}-${pathId}`) as HTMLInputElement;
@@ -874,8 +980,8 @@ class ConfigManager {
     // Event listener para salvar resultado
     const saveBtn = document.querySelector(`[data-method="${method}"][data-path="${path}"][data-config-id="${configId}"].save-result-btn`) as HTMLButtonElement;
     if (saveBtn) {
-      saveBtn.addEventListener('click', () => {
-        this.saveTestResult(method, path, configId, queryParams, body, response, timestamp);
+      saveBtn.addEventListener('click', async () => {
+        await this.saveTestResult(method, path, configId, queryParams, body, response, timestamp);
       });
     }
 
@@ -888,7 +994,7 @@ class ConfigManager {
     }
   }
 
-  private saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
+  private async saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
     const pathId = path.replace(/[^a-zA-Z0-9]/g, '-');
     const nameInput = document.getElementById(`result-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
@@ -928,8 +1034,8 @@ class ConfigManager {
     // Adicionar o resultado salvo
     this.savedResults[configId].push(savedResult);
     
-    // Salvar no localStorage
-    this.saveSavedResults();
+    // Salvar no app_data_dir
+    await this.saveSavedResults();
     
     this.showToast('Resultado salvo com sucesso!', 'success');
   }
@@ -1015,14 +1121,14 @@ class ConfigManager {
       this.attachCopyButtonsListeners();
       // Adicionar listeners para os novos botões de exclusão
       modal.querySelectorAll('.delete-result-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
           e.stopPropagation();
           const target = e.target as HTMLElement;
           const resultId = target.dataset.resultId;
           const btnConfigId = target.dataset.configId;
           
           if (resultId && btnConfigId) {
-            this.deleteSavedResult(resultId, btnConfigId);
+            await this.deleteSavedResult(resultId, btnConfigId);
           }
         });
       });
@@ -1036,14 +1142,14 @@ class ConfigManager {
     
     // Adicionar event listeners para os botões de exclusão
     modal.querySelectorAll('.delete-result-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const target = e.target as HTMLElement;
         const resultId = target.dataset.resultId;
         const btnConfigId = target.dataset.configId;
         
         if (resultId && btnConfigId) {
-          this.deleteSavedResult(resultId, btnConfigId);
+          await this.deleteSavedResult(resultId, btnConfigId);
         }
       });
     });
@@ -1475,7 +1581,7 @@ class ConfigManager {
     });
   }
 
-  private deleteSavedResult(resultId: string, configId: string) {
+  private async deleteSavedResult(resultId: string, configId: string) {
     if (!confirm('Tem certeza que deseja excluir este resultado salvo?')) {
       return;
     }
@@ -1504,7 +1610,7 @@ class ConfigManager {
     return div.innerHTML;
   }
 
-  private loadTheme() {
+  private async loadTheme() {
     try {
       const savedTheme = localStorage.getItem(this.THEME_KEY);
       if (savedTheme === 'dark') {
@@ -1516,6 +1622,9 @@ class ConfigManager {
       }
     } catch (error) {
       console.error('Failed to load theme:', error);
+      // Tema padrão (light)
+      document.documentElement.removeAttribute('data-theme');
+      this.elements.themeToggleBtn.textContent = '☀️';
     }
   }
 

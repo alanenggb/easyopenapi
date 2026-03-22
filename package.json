@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "description": "OpenAPI UI",
-  "author": "Alan Ribeiro Araujo Morais <alan.r.araujo@gmail.com>",
+  "author": "Alan Ribeiro",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "tauri:dev": "tauri dev",
