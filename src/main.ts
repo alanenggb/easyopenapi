@@ -1383,10 +1383,10 @@ class ConfigManager {
     });
 
     // Adicionar event listeners para busca individual em cada resultado
-    this.setupHistoryResponseSearchListeners(modal, configId);
+    this.setupHistoryResponseSearchListeners(configId);
   }
 
-  private setupHistoryResponseSearchListeners(modal: HTMLElement, configId: string) {
+  private setupHistoryResponseSearchListeners(configId: string) {
     // Configurar busca para cada resultado individual no histórico
     const results = this.savedResults[configId] || [];
     
