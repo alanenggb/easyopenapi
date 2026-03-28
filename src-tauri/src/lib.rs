@@ -1,5 +1,9 @@
 use tauri::Manager;
 
+#[cfg(windows)]
+#[allow(unused_imports)]
+use std::os::windows::process::CommandExt;
+
 #[tauri::command]
 async fn fetch_openapi_spec(url: String, use_auth: bool) -> Result<serde_json::Value, String> {
     use reqwest::Client;
@@ -159,11 +163,17 @@ async fn get_gcloud_token() -> Result<String, String> {
                 continue;
             }
             
-            // Executa o comando gcloud diretamente
-            let result = Command::new(gcloud_path)
-                .args(&["auth", "print-identity-token"])
-                .output()
-                .await;
+            // Executa o comando gcloud diretamente sem mostrar janela CMD
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&["auth", "print-identity-token"]);
+            
+            // No Windows, criar sem janela de console
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            let result = cmd.output().await;
                 
             match result {
                 Ok(output) if output.status.success() => {
@@ -352,8 +362,13 @@ pub fn run() {
                         if let Some(y) = state.get("y").and_then(|v: &serde_json::Value| v.as_f64()) {
                             if let Some(width) = state.get("width").and_then(|v: &serde_json::Value| v.as_f64()) {
                                 if let Some(height) = state.get("height").and_then(|v: &serde_json::Value| v.as_f64()) {
+                                    // Aplicar posição salva
                                     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: x as i32, y: y as i32 }));
-                                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: width as u32, height: height as u32 }));
+                                    
+                                    // Aplicar tamanho com pequeno ajuste para compensar barras do sistema
+                                    let adjusted_width = (width as u32).saturating_sub(16); // Compensar bordas
+                                    let adjusted_height = (height as u32).saturating_sub(8); // Compensar bordas
+                                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
                                 }
                             }
                         }
