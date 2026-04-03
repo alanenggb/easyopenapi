@@ -1050,7 +1050,7 @@ class ConfigManager {
     const body = bodyTextarea?.value || '';
 
     if (saveType === 'database') {
-      // Salvar no bucket GCS
+      // Salvar no banco de dados
       const config = this.configs.find(c => c.id === configId);
       if (!config || !config.gcpSecretName) {
         this.showToast('Configuração não possui banco de dados configurado.', 'error');
@@ -1088,12 +1088,12 @@ class ConfigManager {
 
         this.showToast(`Conjunto de valores salvo no banco de dados com sucesso! (${objectPath})`, 'success');
         
-        // Atualizar o select para incluir os conjuntos do bucket
+        // Atualizar o select para incluir os conjuntos do banco de dados
         this.updateSavedSetsSelect(method, path, configId);
         
       } catch (error) {
-        console.error('Failed to save value set to GCS bucket:', error);
-        this.showToast(`Erro ao salvar no bucket: ${String(error)}`, 'error');
+        console.error('Failed to save value set to PostgreSQL database:', error);
+        this.showToast(`Erro ao salvar no banco de dados: ${String(error)}`, 'error');
       }
     } else {
       // Salvar localmente (código existente)
@@ -1495,7 +1495,7 @@ class ConfigManager {
     };
 
     if (saveType === 'database') {
-      // Salvar no bucket GCS
+      // Salvar no banco de dados
       const config = this.configs.find(c => c.id === configId);
       if (!config || !config.gcpSecretName) {
         this.showToast('Configuração não possui banco de dados configurado.', 'error');
@@ -1536,8 +1536,8 @@ class ConfigManager {
           await this.displayHistoryResults(configId, endpointFilter, searchFilter, '', sourceFilter);
         }
       } catch (error) {
-        console.error('Failed to save to GCS bucket:', error);
-        this.showToast(`Erro ao salvar no bucket: ${String(error)}`, 'error');
+        console.error('Failed to save to PostgreSQL database:', error);
+        this.showToast(`Erro ao salvar no banco de dados: ${String(error)}`, 'error');
       }
     } else {
       // Salvar localmente (código existente)
@@ -1657,7 +1657,7 @@ class ConfigManager {
           configId
         });
         
-        // Marcar resultados do bucket
+        // Marcar resultados do banco de dados
         const bucketResultsWithLocation = bucketResults.map(r => ({ 
           ...r, 
           storageLocation: 'database' as const,
@@ -1666,8 +1666,8 @@ class ConfigManager {
         
         allResults.push(...bucketResultsWithLocation);
       } catch (error) {
-        console.error('Failed to load bucket results:', error);
-        // Não mostrar erro ao usuário, apenas não incluir resultados do bucket
+        console.error('Failed to load database results:', error);
+        // Não mostrar erro ao usuário, apenas não incluir resultados do banco de dados
       }
     }
     
@@ -1934,7 +1934,7 @@ class ConfigManager {
       allResults.push(...localResults.map(r => ({ ...r, storageLocation: r.storageLocation || 'local' as const })));
     }
 
-    // Adicionar resultados do bucket se configurado (apenas se sourceFilter for 'todos' ou 'bucket')
+    // Adicionar resultados do banco de dados se configurado (apenas se sourceFilter for 'todos' ou 'database')
     if ((sourceFilter === 'todos' || sourceFilter === 'database') && config && config.gcpSecretName) {
       try {
         const bucketResults = await invoke<SavedResult[]>('list_postgres_results', {
@@ -1942,7 +1942,7 @@ class ConfigManager {
           configId
         });
         
-        // Marcar resultados do bucket
+        // Marcar resultados do banco de dados
         const bucketResultsWithLocation = bucketResults.map(r => ({ 
           ...r, 
           storageLocation: 'database' as const,
@@ -1951,8 +1951,8 @@ class ConfigManager {
         
         allResults.push(...bucketResultsWithLocation);
       } catch (error) {
-        console.error('Failed to load bucket results:', error);
-        // Não mostrar erro ao usuário, apenas não incluir resultados do bucket
+        console.error('Failed to load database results:', error);
+        // Não mostrar erro ao usuário, apenas não incluir resultados do banco de dados
       }
     }
 
@@ -2301,10 +2301,10 @@ class ConfigManager {
                       data-path="${path}"
                       data-config-id="${configId}"
                       data-timestamp="${timestamp}"
-                      data-save-type="bucket"
-                      title="Salvar no bucket GCS"
+                      data-save-type="database"
+                      title="Salvar no banco de dados"
                     >
-                      Salvar no bucket
+                      Salvar no banco de dados
                     </button>
                   </div>
                   <button 
@@ -2501,9 +2501,9 @@ class ConfigManager {
               data-method="${method}"
               data-path="${path}"
               data-config-id="${configId}"
-              title="Salvar no bucket GCS"
+              title="Salvar no banco de dados"
             >
-              Salvar no bucket
+              Salvar no banco de dados
             </button>
           </div>
           <div class="load-set-controls">
@@ -2517,8 +2517,8 @@ class ConfigManager {
                 data-config-id="${configId}"
               >
                 <option value="todos">Todos</option>
-                <option value="local">Local</option>
-                <option value="bucket">Bucket</option>
+                <option value="local">Apenas local</option>
+                <option value="database">Apenas banco de dados</option>
               </select>
               <select 
                 id="saved-sets-${method}-${pathId}"
