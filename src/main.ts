@@ -77,6 +77,7 @@ class ConfigManager {
   private defaultBodyValues = new Map<string, string>();
   private readonly APP_VERSION = '0.1.0'; // Versão atual do aplicativo
   private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
+  private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
@@ -428,6 +429,9 @@ class ConfigManager {
     // Atualizar título da janela
     await this.updateWindowTitle();
     
+    // Resetar erro de banco de dados ao selecionar nova configuração
+    this.databaseError = null;
+    
     if (!configId) {
       this.elements.welcomeScreen.style.display = 'block';
       this.elements.welcomeScreen.innerHTML = `
@@ -442,6 +446,50 @@ class ConfigManager {
 
     const config = this.configs.find(c => c.id === configId);
     if (config) {
+      // Verificar se há erro de secret antes de renderizar
+      let databaseStatusMessage = '';
+      if (config.databaseName) {
+        try {
+          // Tentar acessar o banco para verificar se o secret está acessível
+          await invoke('list_postgres_results', {
+            secretName: config.databaseName,
+            configId
+          });
+          databaseStatusMessage = `<div class="database-success">✅ Secret OK e conexão bem-sucedida</div>`;
+        } catch (error) {
+          console.error('Failed to load database results:', error);
+          const errorMessage = String(error);
+          
+          if (errorMessage.includes('NOT_FOUND') && errorMessage.includes('Secret')) {
+            this.databaseError = `Erro ao acessar secret "${config.databaseName}": Secret não encontrado ou sem permissão. Verifique a configuração no GCP.`;
+            databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
+          } else if (errorMessage.includes('Failed to connect to PostgreSQL') || 
+                     errorMessage.includes('password authentication failed') ||
+                     errorMessage.includes('connection') || 
+                     errorMessage.includes('authentication')) {
+            // Extrair mensagem mais amigável do erro
+            let friendlyMessage = errorMessage;
+            if (errorMessage.includes('usuário') || errorMessage.includes('senha incorretos')) {
+              friendlyMessage = 'Credenciais de acesso incorretas';
+            } else if (errorMessage.includes('connection refused')) {
+              friendlyMessage = 'Servidor PostgreSQL não está acessível';
+            } else if (errorMessage.includes('does not exist')) {
+              friendlyMessage = 'Banco de dados não encontrado';
+            } else if (errorMessage.includes('timeout')) {
+              friendlyMessage = 'Timeout na conexão';
+            }
+            
+            this.databaseError = `Erro de conexão PostgreSQL "${config.databaseName}": ${friendlyMessage}`;
+            databaseStatusMessage = `<div class="database-error">❌ ${this.escapeHtml(this.databaseError)}</div>`;
+          } else {
+            // Truncar mensagem muito longa para exibição
+            const displayMessage = errorMessage.length > 100 ? errorMessage.substring(0, 100) + '...' : errorMessage;
+            this.databaseError = `Erro ao acessar banco de dados "${config.databaseName}": ${displayMessage}`;
+            databaseStatusMessage = `<div class="database-error">⚠️ ${this.escapeHtml(this.databaseError)}</div>`;
+          }
+        }
+      }
+
       this.elements.welcomeScreen.innerHTML = `
         <div class="selected-config">
           <div class="config-header">
@@ -449,6 +497,10 @@ class ConfigManager {
               <h3>${this.escapeHtml(config.name)}</h3>
               <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
               <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
+              ${config.databaseName ? `
+                <div><strong>Secret do BD:</strong> <span>${this.escapeHtml(config.databaseName)}</span> ${databaseStatusMessage}</div>
+                
+              ` : ''}
             </div>
             <button 
               class="global-history-btn" 
@@ -1045,6 +1097,97 @@ class ConfigManager {
         }
       });
     });
+
+    // Adicionar event listener para o botão de recarregar secret
+    document.querySelectorAll('.reload-secret-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const target = e.target as HTMLElement;
+        const configId = target.dataset.configId;
+        const secretName = target.dataset.secretName;
+        
+        if (configId && secretName) {
+          await this.reloadSecret(configId, secretName);
+        }
+      });
+    });
+  }
+
+  private async reloadSecret(configId: string, secretName: string) {
+    const config = this.configs.find(c => c.id === configId);
+    if (!config) return;
+
+    // Mostrar indicador de carregamento no botão
+    const reloadBtn = document.querySelector(`.reload-secret-btn[data-config-id="${configId}"]`) as HTMLButtonElement;
+    if (reloadBtn) {
+      reloadBtn.innerHTML = '🔄 Carregando...';
+      reloadBtn.disabled = true;
+    }
+
+    try {
+      // Tentar acessar o banco para verificar se o secret está acessível
+      await invoke('list_postgres_results', {
+        secretName: secretName,
+        configId
+      });
+
+      // Atualizar mensagem de sucesso
+      const configInfo = document.querySelector('.config-info');
+      if (configInfo) {
+        // Remover mensagens anteriores
+        const existingMessages = configInfo.querySelectorAll('.database-success, .database-error');
+        existingMessages.forEach(msg => msg.remove());
+
+        // Adicionar mensagem de sucesso
+        const successDiv = document.createElement('div');
+        successDiv.className = 'database-success';
+        successDiv.innerHTML = `✅ Secret "${this.escapeHtml(secretName)}" recarregado com sucesso`;
+        
+        // Inserir após a linha do Banco de Dados
+        const dbLabel = Array.from(configInfo.children).find(child => 
+          child.textContent?.includes('Banco de Dados:')
+        );
+        if (dbLabel) {
+          dbLabel.parentNode?.insertBefore(successDiv, dbLabel.nextSibling);
+        }
+      }
+
+      this.showToast('Secret recarregado com sucesso!', 'success');
+    } catch (error) {
+      console.error('Failed to reload database results:', error);
+      const errorMessage = String(error);
+      
+      if (errorMessage.includes('NOT_FOUND') && errorMessage.includes('Secret')) {
+        // Atualizar mensagem de erro
+        const configInfo = document.querySelector('.config-info');
+        if (configInfo) {
+          // Remover mensagens anteriores
+          const existingMessages = configInfo.querySelectorAll('.database-success, .database-error');
+          existingMessages.forEach(msg => msg.remove());
+
+          // Adicionar mensagem de erro
+          const errorDiv = document.createElement('div');
+          errorDiv.className = 'database-error';
+          errorDiv.innerHTML = `⚠️ Erro ao acessar secret "${this.escapeHtml(secretName)}": Secret não encontrado ou sem permissão. Verifique a configuração no GCP.`;
+          
+          // Inserir após a linha do Banco de Dados
+          const dbLabel = Array.from(configInfo.children).find(child => 
+            child.textContent?.includes('Banco de Dados:')
+          );
+          if (dbLabel) {
+            dbLabel.parentNode?.insertBefore(errorDiv, dbLabel.nextSibling);
+          }
+        }
+        this.showToast('Erro ao acessar secret. Verifique a configuração no GCP.', 'error');
+      } else {
+        this.showToast('Erro ao recarregar secret.', 'error');
+      }
+    } finally {
+      // Restaurar botão
+      if (reloadBtn) {
+        reloadBtn.innerHTML = '🔄 Recarregar Secret';
+        reloadBtn.disabled = false;
+      }
+    }
   }
 
   private async saveValueSet(method: string, path: string, configId: string, saveType: 'local' | 'database' = 'local') {

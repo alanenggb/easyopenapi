@@ -1,6 +1,10 @@
 use tauri::Manager;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
+use sqlx::postgres::{PgConnectOptions};
+use std::sync::Arc;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -41,6 +45,197 @@ struct TestResultRecord {
     response_data: serde_json::Value,
     timestamp: chrono::DateTime<chrono::Utc>,
     user_account: String,
+}
+
+// Cache de conexões PostgreSQL
+#[derive(Clone)]
+struct PostgresConnectionCache {
+    connections: Arc<Mutex<HashMap<String, PgPool>>>,
+}
+
+// Cache de configurações PostgreSQL
+#[derive(Clone)]
+struct PostgresConfigCache {
+    configs: Arc<Mutex<HashMap<String, PostgresConfig>>>,
+}
+
+impl PostgresConnectionCache {
+    fn new() -> Self {
+        Self {
+            connections: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+    
+    async fn clear_cache(&self, secret_name: Option<&str>) {
+        let mut connections = self.connections.lock().await;
+        match secret_name {
+            Some(name) => {
+                // Remover conexões que contenham o nome do secret no cache key
+                connections.retain(|key, _| !key.contains(&format!("{}:", name)));
+                println!("Cleared connection cache for secret: {}", name);
+            }
+            None => {
+                connections.clear();
+                println!("Cleared all connection cache");
+            }
+        }
+    }
+    
+    async fn get_connection(&self, config: &PostgresConfig) -> Result<PgPool, String> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        // Incluir hash da senha no cache key para detectar mudanças de credenciais
+        let mut hasher = DefaultHasher::new();
+        config.pw.hash(&mut hasher);
+        let password_hash = hasher.finish();
+        
+        let cache_key = format!("{}:{}@{}:{}/{}#{}", config.user, config.host, config.port, config.db, config.schema, password_hash);
+        
+        let mut connections = self.connections.lock().await;
+        
+        // Verificar se já existe conexão no cache
+        if let Some(pool) = connections.get(&cache_key) {
+            // Testar se a conexão ainda está válida
+            match sqlx::query("SELECT 1").fetch_one(pool).await {
+                Ok(_) => return Ok(pool.clone()),
+                Err(e) => {
+                    // Conexão inválida, remover do cache
+                    connections.remove(&cache_key);
+                    println!("Removed invalid connection from cache: {}", e);
+                }
+            }
+        }
+        
+        // Criar nova conexão
+        let options = PgConnectOptions::new()
+    .host(&config.host)
+    .port(config.port as u16)
+    .username(&config.user)
+    .password(&config.pw)
+    .database(&config.db)
+    .options([("search_path", config.schema.as_str())]);
+
+let pool = PgPool::connect_with(options)
+    .await
+    .map_err(|e| {
+        let error_str = e.to_string();
+        if error_str.contains("password authentication failed") {
+            format!("Falha de autenticação PostgreSQL: usuário '{}' ou senha incorretos para o banco '{}'", config.user, config.db)
+        } else if error_str.contains("connection refused") {
+            format!("Conexão PostgreSQL recusada: verifique se o servidor está rodando em {}:{}", config.host, config.port)
+        } else if error_str.contains("database") && error_str.contains("does not exist") {
+            format!("Banco de dados '{}' não existe no servidor PostgreSQL", config.db)
+        } else if error_str.contains("timeout") {
+            format!("Timeout na conexão PostgreSQL: servidor em {}:{} não respondeu", config.host, config.port)
+        } else {
+            format!("Erro na conexão PostgreSQL: {}", e)
+        }
+    })?;
+        
+        // Adicionar ao cache
+        connections.insert(cache_key, pool.clone());
+        
+        Ok(pool)
+    }
+}
+
+impl PostgresConfigCache {
+    fn new() -> Self {
+        Self {
+            configs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+    
+    async fn get_config(&self, secret_name: &str) -> Result<PostgresConfig, String> {
+        let mut configs = self.configs.lock().await;
+        
+        // Verificar se já existe configuração no cache
+        if let Some(config) = configs.get(secret_name) {
+            println!("Using cached config for secret: {}", secret_name);
+            return Ok(config.clone());
+        }
+        
+        // Buscar configuração do GCP
+        println!("Fetching config from GCP for secret: {}", secret_name);
+        let config = fetch_postgres_config_from_gcp(secret_name).await?;
+        
+        // Adicionar ao cache
+        configs.insert(secret_name.to_string(), config.clone());
+        
+        Ok(config)
+    }
+    
+    async fn clear_cache(&self, secret_name: Option<&str>) {
+        let mut configs = self.configs.lock().await;
+        match secret_name {
+            Some(name) => {
+                configs.remove(name);
+                println!("Cleared cache for secret: {}", name);
+            }
+            None => {
+                configs.clear();
+                println!("Cleared all config cache");
+            }
+        }
+    }
+}
+
+async fn fetch_postgres_config_from_gcp(secret_name: &str) -> Result<PostgresConfig, String> {
+    use tokio::process::Command;
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "secrets", "versions", "access", "latest",
+                &format!("--secret={}", secret_name)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let output = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?
+                .wait_with_output()
+                .await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let secret_json = String::from_utf8_lossy(&output.stdout);
+                
+                match serde_json::from_str::<PostgresConfig>(&secret_json) {
+                    Ok(config) => return Ok(config),
+                    Err(e) => return Err(format!("Failed to parse PostgreSQL config: {}", e)),
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("NOT_FOUND") || stderr.contains("Secret") {
+                    return Err(format!("Secret '{}' not found or access denied", secret_name));
+                }
+                continue;
+            }
+        }
+    }
+    
+    Err("gcloud not found or not configured".to_string())
 }
 
 #[tauri::command]
@@ -312,114 +507,34 @@ async fn get_gcloud_account() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn get_postgres_config(secret_name: String) -> Result<PostgresConfig, String> {
-    use tokio::process::Command;
-    
-    #[cfg(target_os = "windows")]
-    {
-        use std::path::Path;
-        
-        let gcloud_candidates = vec![
-            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-        ];
-        
-        for gcloud_path in &gcloud_candidates {
-            if !Path::new(gcloud_path).exists() {
-                continue;
-            }
-            
-            let mut cmd = Command::new(gcloud_path);
-            cmd.args(&[
-                "secrets", "versions", "access", "latest",
-                &format!("--secret={}", secret_name)
-            ]);
-            
-            #[cfg(windows)]
-            {
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            
-            let output = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?
-                .wait_with_output()
-                .await
-                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
-            
-            if output.status.success() {
-                let secret_json = String::from_utf8_lossy(&output.stdout);
-                
-                match serde_json::from_str::<PostgresConfig>(&secret_json) {
-                    Ok(config) => return Ok(config),
-                    Err(e) => return Err(format!("Failed to parse PostgreSQL config: {}", e)),
-                }
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to access secret: {}", stderr));
-            }
-        }
-        
-        Err("gcloud not found".to_string())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let gcloud_candidates = vec![
-            "/opt/homebrew/bin/gcloud".to_string(),
-            "/usr/local/bin/gcloud".to_string(),
-            format!("{}/google-cloud-sdk/bin/gcloud", home),
-        ];
-
-        for gcloud_path in &gcloud_candidates {
-            if !std::path::Path::new(gcloud_path).exists() {
-                continue;
-            }
-
-            let output = Command::new(gcloud_path)
-                .args(&[
-                    "secrets", "versions", "access", "latest",
-                    &format!("--secret={}", secret_name)
-                ])
-                .output()
-                .await;
-
-            match output {
-                Ok(result) if result.status.success() => {
-                    let secret_json = String::from_utf8_lossy(&result.stdout);
-                    
-                    match serde_json::from_str::<PostgresConfig>(&secret_json) {
-                        Ok(config) => return Ok(config),
-                        Err(e) => return Err(format!("Failed to parse PostgreSQL config: {}", e)),
-                    }
-                }
-                Ok(_) => continue,
-                Err(_) => continue,
-            }
-        }
-        
-        Err("gcloud not found or not configured".to_string())
-    }
-}
-
-async fn create_postgres_connection(config: &PostgresConfig) -> Result<PgPool, String> {
-    let connection_string = format!(
-        "postgres://{}:{}@{}:{}/{}?search_path={}",
-        config.user, config.pw, config.host, config.port, config.db, config.schema
-    );
-    
-    PgPool::connect(&connection_string)
-        .await
-        .map_err(|e| format!("Failed to connect to PostgreSQL: {}", e))
+async fn get_postgres_config(secret_name: String, cache: tauri::State<'_, PostgresConfigCache>) -> Result<PostgresConfig, String> {
+    cache.get_config(&secret_name).await
 }
 
 #[tauri::command]
-async fn create_postgres_tables(secret_name: String) -> Result<String, String> {
-    let config = get_postgres_config(secret_name).await?;
-    let pool = create_postgres_connection(&config).await?;
+async fn clear_postgres_config_cache(
+    secret_name: Option<String>, 
+    cache: tauri::State<'_, PostgresConfigCache>,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>
+) -> Result<String, String> {
+    match &secret_name {
+        Some(name) => {
+            cache.clear_cache(Some(name)).await;
+            connection_cache.clear_cache(Some(name)).await;
+            Ok(format!("Cache cleared for secret: {}", name))
+        }
+        None => {
+            cache.clear_cache(None).await;
+            connection_cache.clear_cache(None).await;
+            Ok("All cache cleared".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn create_postgres_tables(secret_name: String, connection_cache: tauri::State<'_, PostgresConnectionCache>, config_cache: tauri::State<'_, PostgresConfigCache>) -> Result<String, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
     
     // Criar tabela de value sets
     sqlx::query(r#"
@@ -479,9 +594,16 @@ async fn save_value_set_to_postgres(
     endpoint_method: String,
     endpoint_path: String,
     value_set_data: serde_json::Value,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<String, String> {
-    // Obter conta do usuário
-    let user_account = get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string());
+    // Extrair conta do usuário dos dados (com fallback para gcloud atual)
+    let user_account = if let Some(account) = value_set_data.get("userAccount").and_then(|v| v.as_str()) {
+        account.to_string()
+    } else {
+        // Fallback: tentar obter do gcloud se não especificado
+        get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string())
+    };
     
     // Extrair dados do value set
     let set_name = value_set_data.get("name")
@@ -503,16 +625,15 @@ async fn save_value_set_to_postgres(
         .unwrap_or("")
         .to_string();
     
-    // Conectar ao PostgreSQL
-    let config = get_postgres_config(secret_name).await?;
-    let pool = create_postgres_connection(&config).await?;
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
     
-    // Inserir ou atualizar value set
+    // Inserir ou atualizar value set (baseado no nome único dentro do mesmo endpoint)
     sqlx::query(r#"
         INSERT INTO value_sets (id, name, config_id, endpoint_method, endpoint_path, path_params, query_params, body, user_account)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
+        ON CONFLICT (name, config_id, endpoint_method, endpoint_path) DO UPDATE SET
+            id = EXCLUDED.id,
             path_params = EXCLUDED.path_params,
             query_params = EXCLUDED.query_params,
             body = EXCLUDED.body,
@@ -538,10 +659,12 @@ async fn save_value_set_to_postgres(
 async fn list_postgres_value_sets(
     secret_name: String,
     config_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<Vec<serde_json::Value>, String> {
     // Conectar ao PostgreSQL
-    let config = get_postgres_config(secret_name).await?;
-    let pool = create_postgres_connection(&config).await?;
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
     
     // Buscar value sets do banco
     let rows = sqlx::query(r#"
@@ -556,7 +679,7 @@ async fn list_postgres_value_sets(
     .await
     .map_err(|e| format!("Failed to fetch value sets from PostgreSQL: {}", e))?;
     
-    let mut results = Vec::new();
+    let mut results: Vec<serde_json::Value> = Vec::new();
     for row in rows {
         let value_set = serde_json::json!({
             "id": row.get::<String, &str>("id"),
@@ -585,9 +708,16 @@ async fn save_to_postgres(
     endpoint_method: String,
     endpoint_path: String,
     result_data: serde_json::Value,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<String, String> {
-    // Obter conta do usuário
-    let user_account = get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string());
+    // Extrair conta do usuário dos dados (com fallback para gcloud atual)
+    let user_account = if let Some(account) = result_data.get("userAccount").and_then(|v| v.as_str()) {
+        account.to_string()
+    } else {
+        // Fallback: tentar obter do gcloud se não especificado
+        get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string())
+    };
     
     // Extrair dados do resultado
     let result_name = result_data.get("name")
@@ -602,15 +732,15 @@ async fn save_to_postgres(
         .to_string();
     
     // Conectar ao PostgreSQL
-    let config = get_postgres_config(secret_name).await?;
-    let pool = create_postgres_connection(&config).await?;
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
     
-    // Inserir ou atualizar resultado
+    // Inserir ou atualizar resultado (baseado no nome único dentro do mesmo endpoint)
     sqlx::query(r#"
         INSERT INTO test_results (id, name, config_id, endpoint_method, endpoint_path, request_data, response_data, user_account)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
+        ON CONFLICT (name, config_id, endpoint_method, endpoint_path) DO UPDATE SET
+            id = EXCLUDED.id,
             request_data = EXCLUDED.request_data,
             response_data = EXCLUDED.response_data,
             user_account = EXCLUDED.user_account
@@ -634,10 +764,12 @@ async fn save_to_postgres(
 async fn list_postgres_results(
     secret_name: String,
     config_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<Vec<serde_json::Value>, String> {
     // Conectar ao PostgreSQL
-    let config = get_postgres_config(secret_name).await?;
-    let pool = create_postgres_connection(&config).await?;
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
     
     // Buscar resultados do banco
     let rows = sqlx::query(r#"
@@ -652,7 +784,7 @@ async fn list_postgres_results(
     .await
     .map_err(|e| format!("Failed to fetch test results from PostgreSQL: {}", e))?;
     
-    let mut results = Vec::new();
+    let mut results: Vec<serde_json::Value> = Vec::new();
     for row in rows {
         let result = serde_json::json!({
             "id": row.get::<String, &str>("id"),
@@ -884,6 +1016,97 @@ async fn read_package_json() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn delete_value_set_from_postgres(secret_name: String, config_id: String, method: String, path: String, value_set_id: String, user_account: String, connection_cache: tauri::State<'_, PostgresConnectionCache>, config_cache: tauri::State<'_, PostgresConfigCache>) -> Result<bool, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+
+    // Verificar se o usuário é o criador do conjunto de valores
+    let row = sqlx::query(
+        r#"SELECT id, name, config_id, endpoint_method, endpoint_path, path_params, query_params, body, created_at, user_account 
+         FROM value_sets 
+         WHERE id = $1 AND config_id = $2 AND endpoint_method = $3 AND endpoint_path = $4"#
+    )
+    .bind(&value_set_id)
+    .bind(&config_id)
+    .bind(&method)
+    .bind(&path)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| format!("Erro ao buscar conjunto de valores: {}", e))?;
+
+    let record = ValueSetRecord {
+        id: row.get("id"),
+        name: row.get("name"),
+        config_id: row.get("config_id"),
+        endpoint_method: row.get("endpoint_method"),
+        endpoint_path: row.get("endpoint_path"),
+        path_params: row.get("path_params"),
+        query_params: row.get("query_params"),
+        body: row.get("body"),
+        created_at: row.get("created_at"),
+        user_account: row.get("user_account"),
+    };
+
+    // Verificar se o usuário atual é o criador
+    if record.user_account != user_account {
+        return Err("Você não tem permissão para excluir este conjunto de valores.".to_string());
+    }
+
+    // Excluir o conjunto de valores
+    let result = sqlx::query("DELETE FROM value_sets WHERE id = $1")
+        .bind(&value_set_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Erro ao excluir conjunto de valores: {}", e))?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+#[tauri::command]
+async fn delete_test_result_from_postgres(secret_name: String, config_id: String, result_id: String, user_account: String, connection_cache: tauri::State<'_, PostgresConnectionCache>, config_cache: tauri::State<'_, PostgresConfigCache>) -> Result<bool, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+
+    // Verificar se o usuário é o criador do resultado
+    let row = sqlx::query(
+        r#"SELECT id, name, config_id, endpoint_method, endpoint_path, request_data, response_data, timestamp, user_account 
+         FROM test_results 
+         WHERE id = $1 AND config_id = $2"#
+    )
+    .bind(&result_id)
+    .bind(&config_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| format!("Erro ao buscar resultado de teste: {}", e))?;
+
+    let record = TestResultRecord {
+        id: row.get("id"),
+        name: row.get("name"),
+        config_id: row.get("config_id"),
+        endpoint_method: row.get("endpoint_method"),
+        endpoint_path: row.get("endpoint_path"),
+        request_data: row.get("request_data"),
+        response_data: row.get("response_data"),
+        timestamp: row.get("timestamp"),
+        user_account: row.get("user_account"),
+    };
+
+    // Verificar se o usuário atual é o criador
+    if record.user_account != user_account {
+        return Err("Você não tem permissão para excluir este resultado de teste.".to_string());
+    }
+
+    // Excluir o resultado de teste
+    let result = sqlx::query("DELETE FROM test_results WHERE id = $1")
+        .bind(&result_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Erro ao excluir resultado de teste: {}", e))?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -891,6 +1114,14 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
+            
+            // Inicializar cache de conexões PostgreSQL
+            let postgres_cache = PostgresConnectionCache::new();
+            app.manage(postgres_cache);
+            
+            // Inicializar cache de configurações PostgreSQL
+            let postgres_config_cache = PostgresConfigCache::new();
+            app.manage(postgres_config_cache);
             
             // Restaurar posição e tamanho da janela ao iniciar
             let store_result = tauri_plugin_store::StoreBuilder::new(app, std::path::PathBuf::from(".window-state.json")).build();
@@ -952,10 +1183,13 @@ pub fn run() {
             read_package_json,
             create_postgres_tables,
             get_postgres_config,
+            clear_postgres_config_cache,
             save_to_postgres, 
             list_postgres_results, 
             save_value_set_to_postgres, 
-            list_postgres_value_sets
+            list_postgres_value_sets,
+            delete_value_set_from_postgres,
+            delete_test_result_from_postgres
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

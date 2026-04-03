@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS test_results (
 CREATE INDEX IF NOT EXISTS idx_value_sets_config_endpoint ON value_sets (config_id, endpoint_method, endpoint_path);
 CREATE INDEX IF NOT EXISTS idx_test_results_config_endpoint ON test_results (config_id, endpoint_method, endpoint_path);
 
+-- Índices únicos para evitar duplicatas de nomes dentro do mesmo endpoint
+-- Isso permite que o sistema substitua um registro existente com o mesmo nome
+-- em vez de criar duplicatas (upsert baseado no nome)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_value_sets_unique_name ON value_sets (name, config_id, endpoint_method, endpoint_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_test_results_unique_name ON test_results (name, config_id, endpoint_method, endpoint_path);
+
+-- Comentários sobre os índices únicos
+COMMENT ON INDEX idx_value_sets_unique_name IS 'Garante nomes únicos para value sets dentro do mesmo endpoint';
+COMMENT ON INDEX idx_test_results_unique_name IS 'Garante nomes únicos para test results dentro do mesmo endpoint';
+
 -- Índices adicionais para buscas comuns
 CREATE INDEX IF NOT EXISTS idx_value_sets_created_at ON value_sets (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_test_results_timestamp ON test_results (timestamp DESC);
