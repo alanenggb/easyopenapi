@@ -7,7 +7,8 @@ interface Configuration {
   url: string;
   useDefaultAuth: boolean;
   headers: Array<{ name: string; value: string }>;
-  gcpSecretName?: string;
+  databaseName?: string;
+  gcpSecretName?: string; // Para compatibilidade com configurações salvas antigas
 }
 
 interface TestResponse {
@@ -81,7 +82,7 @@ class ConfigManager {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
     nameInput: document.querySelector("#config-name") as HTMLInputElement,
     urlInput: document.querySelector("#config-url") as HTMLInputElement,
-    bucketInput: document.querySelector("#config-bucket") as HTMLInputElement,
+    databaseInput: document.querySelector("#config-secret") as HTMLInputElement,
     authCheckbox: document.querySelector("#config-auth") as HTMLInputElement,
     headersList: document.querySelector("#headers-list") as HTMLDivElement,
     addHeaderBtn: document.querySelector("#add-header-btn") as HTMLButtonElement,
@@ -250,6 +251,21 @@ class ConfigManager {
         const stored = await invoke<any>('load_app_data', { key: this.STORAGE_KEY });
         if (stored) {
           this.configs = stored;
+          
+          // Migrar configurações antigas que usam gcpSecretName
+          this.configs = this.configs.map(config => {
+            if (config.gcpSecretName && !config.databaseName) {
+              return {
+                ...config,
+                databaseName: config.gcpSecretName,
+                gcpSecretName: undefined // Limpar campo antigo
+              };
+            }
+            return config;
+          });
+          
+          // Salvar configurações migradas
+          await this.saveConfigs();
         } else {
           this.configs = [];
         }
@@ -260,6 +276,19 @@ class ConfigManager {
         const stored = localStorage.getItem(this.STORAGE_KEY);
         if (stored) {
           this.configs = JSON.parse(stored);
+          
+          // Migrar configurações antigas
+          this.configs = this.configs.map(config => {
+            if (config.gcpSecretName && !config.databaseName) {
+              return {
+                ...config,
+                databaseName: config.gcpSecretName,
+                gcpSecretName: undefined
+              };
+            }
+            return config;
+          });
+          
           // Migrar para app_data_dir
           await this.saveConfigs();
         } else {
@@ -267,7 +296,7 @@ class ConfigManager {
         }
       }
     } catch (error) {
-      console.error('Failed to load configurations:', error);
+      console.error('Failed to load configs:', error);
       this.configs = [];
     }
   }
@@ -778,7 +807,7 @@ class ConfigManager {
   private async handleSubmit() {
     const name = this.elements.nameInput.value.trim();
     const url = this.elements.urlInput.value.trim();
-    const gcpSecretName = this.elements.bucketInput.value.trim() || undefined;
+    const databaseName = this.elements.databaseInput.value.trim() || undefined;
     const useDefaultAuth = this.elements.authCheckbox.checked;
     const headers = this.getHeadersFromForm();
 
@@ -803,7 +832,7 @@ class ConfigManager {
           id: this.editingId,
           name,
           url,
-          gcpSecretName,
+          databaseName,
           useDefaultAuth,
           headers
         };
@@ -813,7 +842,7 @@ class ConfigManager {
         id: this.normalizeUrlToId(url),
         name,
         url,
-        gcpSecretName,
+        databaseName,
         useDefaultAuth,
         headers
       };
@@ -846,7 +875,7 @@ class ConfigManager {
           <h4>${this.escapeHtml(config.name)}</h4>
           <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
           <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
-          ${config.gcpSecretName ? `<p><strong>Bucket GCS:</strong> ${this.escapeHtml(config.gcpSecretName)}</p>` : ''}
+          ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
           ${config.headers && config.headers.length > 0 ? `
             <p><strong>Headers:</strong></p>
             <div class="config-headers">
@@ -889,7 +918,7 @@ class ConfigManager {
     this.editingId = id;
     this.elements.nameInput.value = config.name;
     this.elements.urlInput.value = config.url;
-    this.elements.bucketInput.value = config.gcpSecretName || '';
+    this.elements.databaseInput.value = config.databaseName || '';
     this.elements.authCheckbox.checked = config.useDefaultAuth;
     
     // Limpar campos de header existentes
@@ -916,6 +945,7 @@ class ConfigManager {
   }
 
   private attachTestEventListeners() {
+    // Adicionar event listeners para testar
     document.querySelectorAll('.test-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
@@ -929,7 +959,7 @@ class ConfigManager {
       });
     });
 
-    // Adicionar event listeners para salvar conjuntos
+    // Adicionar event listeners para salvar conjuntos localmente
     document.querySelectorAll('.save-set-btn').forEach(btn => {
       const handleSaveSetClick = async (e: Event) => {
         const target = e.target as HTMLElement;
@@ -943,10 +973,12 @@ class ConfigManager {
       };
       btn.addEventListener('click', handleSaveSetClick);
     });
-
-    // Adicionar event listeners para salvar conjuntos no bucket
-    document.querySelectorAll('.save-set-bucket-btn').forEach(btn => {
-      const handleSaveSetBucketClick = async (e: Event) => {
+    
+    // Adicionar event listeners para salvar conjuntos no banco de dados
+    const databaseButtons = document.querySelectorAll('.save-set-database-btn');
+    
+    databaseButtons.forEach(btn => {
+      const handleSaveSetDatabaseClick = async (e: Event) => {
         const target = e.target as HTMLElement;
         const method = target.dataset.method;
         const path = target.dataset.path;
@@ -956,7 +988,7 @@ class ConfigManager {
           await this.saveValueSet(method, path, configId, 'database');
         }
       };
-      btn.addEventListener('click', handleSaveSetBucketClick);
+      btn.addEventListener('click', handleSaveSetDatabaseClick);
     });
 
     // Adicionar event listeners para filtro de conjuntos
@@ -1052,7 +1084,8 @@ class ConfigManager {
     if (saveType === 'database') {
       // Salvar no banco de dados
       const config = this.configs.find(c => c.id === configId);
-      if (!config || !config.gcpSecretName) {
+      const dbName = config?.databaseName || config?.gcpSecretName;
+      if (!config || !dbName) {
         this.showToast('Configuração não possui banco de dados configurado.', 'error');
         return;
       }
@@ -1061,7 +1094,7 @@ class ConfigManager {
         // Obter conta do usuário para adicionar ao resultado
         const userAccount = await invoke<string>('get_gcloud_account');
         
-        // Preparar dados para salvar no bucket
+        // Preparar dados para salvar no banco de dados
         const valueSetData = {
           id: Date.now().toString(),
           name,
@@ -1074,12 +1107,12 @@ class ConfigManager {
             path
           },
           userAccount,
-          savedIn: 'bucket'
+          savedIn: 'database'
         };
 
-        // Salvar no bucket
+        // Salvar no banco de dados
         const objectPath = await invoke<string>('save_value_set_to_postgres', {
-          secretName: config.gcpSecretName,
+          secretName: dbName,
           configId,
           endpointMethod: method,
           endpointPath: path,
@@ -1158,30 +1191,30 @@ class ConfigManager {
       // Carregar conjunto do banco de dados
       try {
         const config = this.configs.find(c => c.id === configId);
-        if (!config || !config.gcpSecretName) {
+        if (!config || !config.databaseName) {
           this.showToast('Configuração não possui banco de dados configurado.', 'error');
           return;
         }
         
-        const bucketSets = await invoke<Array<any>>('list_postgres_value_sets', {
-          secretName: config.gcpSecretName,
+        const databaseSets = await invoke<Array<any>>('list_postgres_value_sets', {
+          secretName: config.databaseName,
           configId
         });
         
         // Filtrar apenas os conjuntos deste endpoint e encontrar o ID correspondente
-        const endpointBucketSets = bucketSets.filter(set => 
+        const endpointDatabaseSets = databaseSets.filter(set => 
           set.endpoint?.method === method && set.endpoint?.path === path
         );
         
-        savedSet = endpointBucketSets.find(set => set.id === actualId);
+        savedSet = endpointDatabaseSets.find(set => set.id === actualId);
         
         if (!savedSet) {
-          console.error('Conjunto do bucket não encontrado:', actualId);
+          console.error('Conjunto do banco de dados não encontrado:', actualId);
           return;
         }
       } catch (error) {
-        console.error('Failed to load bucket value set:', error);
-        this.showToast('Erro ao carregar conjunto do bucket.', 'error');
+        console.error('Failed to load database value set:', error);
+        this.showToast('Erro ao carregar conjunto do banco de dados.', 'error');
         return;
       }
     } else {
@@ -1228,6 +1261,9 @@ class ConfigManager {
   }
 
   private async updateSavedSetsSelect(method: string, path: string, configId: string) {
+    // Esperar um pouco para garantir que o DOM está pronto
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
     const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
     const filter = document.getElementById(`saved-sets-filter-${method}-${pathId}`) as HTMLSelectElement;
@@ -1237,10 +1273,10 @@ class ConfigManager {
 
     const filterType = filter.value;
     
-    // Mostrar indicador de carregamento se estiver carregando do bucket
+    // Mostrar indicador de carregamento se estiver carregando do banco de dados
     if (filterType === 'todos' || filterType === 'database') {
       const config = this.configs.find(c => c.id === configId);
-      if (config && config.gcpSecretName && loadingIndicator) {
+      if (config && (config.databaseName || config.gcpSecretName) && loadingIndicator) {
         loadingIndicator.style.display = 'inline-flex';
       }
     }
@@ -1262,18 +1298,19 @@ class ConfigManager {
     if (filterType === 'todos' || filterType === 'database') {
       try {
         const config = this.configs.find(c => c.id === configId);
-        if (config && config.gcpSecretName) {
-          const bucketSets = await invoke<Array<any>>('list_postgres_value_sets', {
-            secretName: config.gcpSecretName,
+        if (config && (config.databaseName || config.gcpSecretName)) {
+          const dbName = config.databaseName || config.gcpSecretName;
+          const databaseSets = await invoke<Array<any>>('list_postgres_value_sets', {
+            secretName: dbName,
             configId
           });
           
           // Filtrar apenas os conjuntos deste endpoint
-          const endpointBucketSets = bucketSets.filter(set => 
+          const endpointDatabaseSets = databaseSets.filter(set => 
             set.endpoint?.method === method && set.endpoint?.path === path
           );
           
-          endpointBucketSets.forEach(savedSet => {
+          endpointDatabaseSets.forEach(savedSet => {
             const option = document.createElement('option');
             option.value = `database-${savedSet.id}`;
             const userInfo = savedSet.userAccount ? ` [${savedSet.userAccount}]` : '';
@@ -1282,8 +1319,8 @@ class ConfigManager {
           });
         }
       } catch (error) {
-        console.error('Failed to load bucket value sets:', error);
-        // Não mostrar erro ao usuário, apenas não carregar os conjuntos do bucket
+        console.error('Failed to load database value sets:', error);
+        // Não mostrar erro ao usuário, apenas não carregar os conjuntos do banco de dados
       }
     }
     
@@ -1350,7 +1387,7 @@ class ConfigManager {
   }
 
   private attachResultEventListeners(method: string, path: string, configId: string, _pathParams: Record<string, string>, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string, sentUuid?: string) {
-    // Event listeners para salvar teste (local e bucket)
+    // Event listeners para salvar teste (local e banco de dados)
     const saveBtns = document.querySelectorAll(`[data-method="${method}"][data-path="${path}"][data-config-id="${configId}"].save-result-btn`) as NodeListOf<HTMLButtonElement>;
     saveBtns.forEach(saveBtn => {
       if (saveBtn) {
@@ -1497,7 +1534,8 @@ class ConfigManager {
     if (saveType === 'database') {
       // Salvar no banco de dados
       const config = this.configs.find(c => c.id === configId);
-      if (!config || !config.gcpSecretName) {
+      const dbName = config?.databaseName || config?.gcpSecretName;
+      if (!config || !dbName) {
         this.showToast('Configuração não possui banco de dados configurado.', 'error');
         return;
       }
@@ -1513,16 +1551,16 @@ class ConfigManager {
         // Adicionar informação do usuário ao resultado
         savedResult.userAccount = userAccount;
 
-        // Salvar no bucket
+        // Salvar no banco de dados
         await invoke<string>('save_to_postgres', {
-          secretName: config.gcpSecretName,
+          secretName: dbName,
           configId,
           endpointMethod: method,
           endpointPath: path,
           resultData: savedResult
         });
 
-        this.showToast(`Resultado salvo no bucket "${config.gcpSecretName}" com sucesso!`, 'success');
+        this.showToast(`Resultado salvo no banco de dados "${dbName}" com sucesso!`, 'success');
         
         // Refresh history modal if it's open
         const historyModal = document.querySelector('.history-modal') as HTMLElement;
@@ -1592,7 +1630,7 @@ class ConfigManager {
               <select id="history-source-select" class="history-source-select">
                 <option value="todos">Todos</option>
                 <option value="local">Apenas local</option>
-                <option value="bucket">Apenas bucket</option>
+                <option value="database">Apenas banco de dados</option>
               </select>
             </div>
           </div>
@@ -1639,7 +1677,7 @@ class ConfigManager {
     endpointSelect.innerHTML = '<option value="">Carregando...</option>';
     userSelect.innerHTML = '<option value="">Carregando...</option>';
     
-    // Coletar endpoints e usuários de TODOS os resultados (locais + bucket)
+    // Coletar endpoints e usuários de TODOS os resultados (locais + banco de dados)
     const config = this.configs.find(c => c.id === configId);
     const allResults: SavedResult[] = [];
     const endpoints = new Set<string>();
@@ -1649,22 +1687,23 @@ class ConfigManager {
     const localResults = this.savedResults[configId] || [];
     allResults.push(...localResults.map(r => ({ ...r, storageLocation: 'local' as const })));
     
-    // Adicionar resultados do bucket se configurado
-    if (config && config.gcpSecretName) {
+    // Adicionar resultados do banco de dados se configurado
+    const dbName = config?.databaseName || config?.gcpSecretName;
+    if (config && dbName) {
       try {
-        const bucketResults = await invoke<SavedResult[]>('list_postgres_results', {
-          secretName: config.gcpSecretName,
+        const databaseResults = await invoke<SavedResult[]>('list_postgres_results', {
+          secretName: dbName,
           configId
         });
         
         // Marcar resultados do banco de dados
-        const bucketResultsWithLocation = bucketResults.map(r => ({ 
+        const databaseResultsWithLocation = databaseResults.map(r => ({ 
           ...r, 
           storageLocation: 'database' as const,
           userAccount: r.userAccount || 'unknown'
         }));
         
-        allResults.push(...bucketResultsWithLocation);
+        allResults.push(...databaseResultsWithLocation);
       } catch (error) {
         console.error('Failed to load database results:', error);
         // Não mostrar erro ao usuário, apenas não incluir resultados do banco de dados
@@ -1686,7 +1725,7 @@ class ConfigManager {
       endpoints.add(endpointKey);
       
       // Para resultados locais, usar a conta gcloud atual como usuário
-      // Para resultados do bucket, usar o userAccount salvo
+      // Para resultados do banco de dados, usar o userAccount salvo
       const userAccount = result.storageLocation === 'local' 
         ? currentUserGcloudAccount 
         : result.userAccount;
@@ -1935,21 +1974,21 @@ class ConfigManager {
     }
 
     // Adicionar resultados do banco de dados se configurado (apenas se sourceFilter for 'todos' ou 'database')
-    if ((sourceFilter === 'todos' || sourceFilter === 'database') && config && config.gcpSecretName) {
+    if ((sourceFilter === 'todos' || sourceFilter === 'database') && config && config.databaseName) {
       try {
-        const bucketResults = await invoke<SavedResult[]>('list_postgres_results', {
-          secretName: config.gcpSecretName,
+        const databaseResults = await invoke<SavedResult[]>('list_postgres_results', {
+          secretName: config.databaseName,
           configId
         });
         
         // Marcar resultados do banco de dados
-        const bucketResultsWithLocation = bucketResults.map(r => ({ 
+        const databaseResultsWithLocation = databaseResults.map(r => ({ 
           ...r, 
           storageLocation: 'database' as const,
           userAccount: r.userAccount || 'unknown'
         }));
         
-        allResults.push(...bucketResultsWithLocation);
+        allResults.push(...databaseResultsWithLocation);
       } catch (error) {
         console.error('Failed to load database results:', error);
         // Não mostrar erro ao usuário, apenas não incluir resultados do banco de dados
@@ -2002,7 +2041,7 @@ class ConfigManager {
           if (headersStr.toLowerCase().includes(searchLower)) return true;
         }
         
-        // Buscar na conta do usuário (para resultados do bucket)
+        // Buscar na conta do usuário (para resultados do banco de dados)
         if (result.userAccount && result.userAccount.toLowerCase().includes(searchLower)) return true;
         
         return false;
@@ -2025,7 +2064,7 @@ class ConfigManager {
           return currentUserGcloudAccount === userFilter;
         }
         
-        // Para resultados do bucket, verificar userAccount
+        // Para resultados do banco de dados, verificar userAccount
         if (result.storageLocation === 'database' && result.userAccount) {
           return result.userAccount === userFilter;
         }
@@ -2110,7 +2149,7 @@ class ConfigManager {
                 🗑️
               </button>
             ` : `
-              <span class="bucket-result-info" title="Resultados do bucket não podem ser excluídos localmente">
+              <span class="database-result-info" title="Resultados do banco de dados não podem ser excluídos localmente">
                 🗂️
               </span>
             `}
@@ -2296,7 +2335,7 @@ class ConfigManager {
                       Salvar local
                     </button>
                     <button 
-                      class="save-result-btn save-bucket-btn" 
+                      class="save-result-btn save-database-btn" 
                       data-method="${method}"
                       data-path="${path}"
                       data-config-id="${configId}"
@@ -2497,7 +2536,7 @@ class ConfigManager {
               Salvar Local
             </button>
             <button 
-              class="save-set-bucket-btn" 
+              class="save-set-database-btn" 
               data-method="${method}"
               data-path="${path}"
               data-config-id="${configId}"

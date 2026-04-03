@@ -1083,7 +1083,7 @@ span.method-type.patch {
   box-shadow: 0 2px 4px rgba(36, 143, 219, 0.3);
 }
 
-.save-set-bucket-btn {
+.save-set-database-btn {
   background: var(--primary-color);
   color: white;
   padding: 0.4rem 0.8rem;
@@ -1096,13 +1096,13 @@ span.method-type.patch {
   white-space: nowrap;
 }
 
-.save-set-bucket-btn:hover {
+.save-set-database-btn:hover {
   background: var(--primary-hover);
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(36, 143, 219, 0.3);
 }
 
-.save-set-bucket-btn:active {
+.save-set-database-btn:active {
   transform: translateY(0);
 }
 
@@ -1946,6 +1946,24 @@ span.method-type.patch {
   background: var(--primary-hover);
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(36, 143, 219, 0.3);
+}
+
+.save-local-btn {
+  background: #6c757d;
+  color: white;
+}
+
+.save-local-btn:hover {
+  background: #5a6268;
+}
+
+.save-database-btn {
+  background: var(--primary-color);
+  color: white;
+}
+
+.save-database-btn:hover {
+  background: var(--primary-hover);
 }
 
 .show-history-btn {
@@ -3103,7 +3121,7 @@ span.method-type.patch {
   border: 1px solid #bbdefb;
 }
 
-.history-storage-indicator.bucket {
+.history-storage-indicator.database {
   background: #e8f5e8;
   color: #388e3c;
   border: 1px solid #c8e6c9;
@@ -3115,7 +3133,7 @@ span.method-type.patch {
   border: 1px solid #2c5282;
 }
 
-[data-theme="dark"] .history-storage-indicator.bucket {
+[data-theme="dark"] .history-storage-indicator.database {
   background: #1e3a2a;
   color: #68d391;
   border: 1px solid #276749;
@@ -3138,7 +3156,7 @@ span.method-type.patch {
   border: 1px solid #e65100;
 }
 
-.bucket-result-info {
+.database-result-info {
   font-size: 14px;
   color: var(--text-muted);
   cursor: not-allowed;
