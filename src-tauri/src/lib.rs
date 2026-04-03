@@ -182,6 +182,760 @@ async fn get_gcloud_token(app: tauri::AppHandle) -> Result<String, String> {
     Ok(new_token)
 }
 
+#[tauri::command]
+async fn get_gcloud_account() -> Result<String, String> {
+    use tokio::process::Command;
+    use std::env;
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let mut gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        if let Ok(username) = env::var("USERNAME") {
+            let user_path = format!(r"C:\Users\{}\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd", username);
+            gcloud_candidates.push(user_path);
+        }
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&["config", "get-value", "account"]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            match cmd.output().await {
+                Ok(output) if output.status.success() => {
+                    let account = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !account.is_empty() {
+                        // Extract username before @
+                        if let Some(username) = account.split('@').next() {
+                            return Ok(username.to_string());
+                        }
+                        return Ok(account);
+                    }
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+        
+        Err("gcloud not found or not configured".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let result = Command::new(gcloud_path)
+                .args(&["config", "get-value", "account"])
+                .output()
+                .await;
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    let account = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !account.is_empty() {
+                        // Extract username before @
+                        if let Some(username) = account.split('@').next() {
+                            return Ok(username.to_string());
+                        }
+                        return Ok(account);
+                    }
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+        
+        Err("gcloud not found or not configured".to_string())
+    }
+}
+
+#[tauri::command]
+async fn save_value_set_to_gcs_bucket(
+    app: tauri::AppHandle,
+    bucket_name: String,
+    config_id: String,
+    endpoint_method: String,
+    endpoint_path: String,
+    value_set_data: serde_json::Value,
+) -> Result<String, String> {
+    use tokio::process::Command;
+    
+    // Get gcloud token for authentication
+    let _token = get_gcloud_token(app).await?;
+    
+    // Create GCS object path for value sets
+    let sanitized_path = endpoint_path.replace('/', "-");
+    let set_name = value_set_data.get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unnamed")
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect::<String>();
+    let object_path = format!("{}/{}/saved-value-sets/{}.json", 
+        config_id, 
+        format!("{}-{}", endpoint_method.to_lowercase(), sanitized_path),
+        set_name
+    );
+    
+    // Prepare the JSON content
+    let json_content = serde_json::to_string_pretty(&value_set_data)
+        .map_err(|e| format!("Failed to serialize value set data: {}", e))?;
+    
+    // Use gcloud storage cp command to upload to GCS
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cp", "-", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let mut child = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
+            
+            if let Some(stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let mut stdin = stdin;
+                stdin.write_all(json_content.as_bytes()).await
+                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
+                stdin.flush().await
+                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
+            }
+            
+            let output = child.wait_with_output().await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                return Ok(object_path);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Failed to upload to GCS: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cp", "-", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let mut child = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
+            
+            if let Some(stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let mut stdin = stdin;
+                stdin.write_all(json_content.as_bytes()).await
+                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
+                stdin.flush().await
+                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
+            }
+            
+            let output = child.wait_with_output().await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                return Ok(object_path);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Failed to upload to GCS: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn save_to_gcs_bucket(
+    app: tauri::AppHandle,
+    bucket_name: String,
+    config_id: String,
+    endpoint_method: String,
+    endpoint_path: String,
+    result_data: serde_json::Value,
+) -> Result<String, String> {
+    use tokio::process::Command;
+    
+    // Get gcloud token for authentication
+    let _token = get_gcloud_token(app).await?;
+    
+    // Create GCS object path
+    let sanitized_path = endpoint_path.replace('/', "-");
+    let result_name = result_data.get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unnamed")
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect::<String>();
+    let object_path = format!("{}/{}/saved-results/{}.json", 
+        config_id, 
+        format!("{}-{}", endpoint_method.to_lowercase(), sanitized_path),
+        result_name
+    );
+    
+    // Prepare the JSON content
+    let json_content = serde_json::to_string_pretty(&result_data)
+        .map_err(|e| format!("Failed to serialize result data: {}", e))?;
+    
+    // Use gcloud storage cp command to upload to GCS
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cp", "-", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let mut child = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
+            
+            if let Some(stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let mut stdin = stdin;
+                stdin.write_all(json_content.as_bytes()).await
+                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
+                stdin.flush().await
+                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
+            }
+            
+            let output = child.wait_with_output().await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                return Ok(object_path);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Failed to upload to GCS: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cp", "-", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let mut child = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
+            
+            if let Some(stdin) = child.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let mut stdin = stdin;
+                stdin.write_all(json_content.as_bytes()).await
+                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
+                stdin.flush().await
+                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
+            }
+            
+            let output = child.wait_with_output().await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                return Ok(object_path);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Failed to upload to GCS: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn list_gcs_bucket_value_sets(
+    app: tauri::AppHandle,
+    bucket_name: String,
+    config_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    use tokio::process::Command;
+    
+    // Get gcloud token for authentication
+    let _token = get_gcloud_token(app).await?;
+    
+    // List objects in the bucket for this config
+    let prefix = format!("{}/", config_id);
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "ls", 
+                &format!("gs://{}/{}**", bucket_name, prefix)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut results = Vec::new();
+                
+                println!("GCS LS Output for value sets prefix '{}': {}", prefix, stdout);
+                
+                for line in stdout.lines() {
+                    println!("Processing line: {}", line);
+                    if line.contains("saved-value-sets") && line.ends_with(".json") {
+                        // Extract object path and download the file
+                        if let Some(object_path) = line.split_whitespace().last() {
+                            println!("Found value set object: {}", object_path);
+                            // Remove gs://bucket-name/ prefix to get just the object path
+                            let expected_prefix = format!("gs://{}/", bucket_name);
+                            if object_path.starts_with(&expected_prefix) {
+                                let clean_object_path = &object_path[expected_prefix.len()..];
+                                println!("Clean object path: {}", clean_object_path);
+                                let bucket_clone = bucket_name.clone();
+                                if let Ok(result_data) = download_from_gcs_bucket(bucket_clone, clean_object_path).await {
+                                    println!("Successfully downloaded and parsed value set: {}", result_data);
+                                    results.push(result_data);
+                                } else {
+                                    println!("Failed to download value set object: {}", clean_object_path);
+                                }
+                            } else {
+                                println!("Object path doesn't start with expected prefix: {}", object_path);
+                            }
+                        }
+                    }
+                }
+                
+                println!("Returning {} value sets from bucket", results.len());
+                return Ok(results);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GCloud command failed with stderr: {}", stderr);
+                return Err(format!("GCloud command failed: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "ls", 
+                &format!("gs://{}/{}**", bucket_name, prefix)
+            ]);
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut results = Vec::new();
+                
+                println!("GCS LS Output for value sets prefix '{}': {}", prefix, stdout);
+                
+                for line in stdout.lines() {
+                    println!("Processing line: {}", line);
+                    if line.contains("saved-value-sets") && line.ends_with(".json") {
+                        // Extract object path and download the file
+                        if let Some(object_path) = line.split_whitespace().last() {
+                            println!("Found value set object: {}", object_path);
+                            // Remove gs://bucket-name/ prefix to get just the object path
+                            let expected_prefix = format!("gs://{}/", bucket_name);
+                            if object_path.starts_with(&expected_prefix) {
+                                let clean_object_path = &object_path[expected_prefix.len()..];
+                                println!("Clean object path: {}", clean_object_path);
+                                let bucket_clone = bucket_name.clone();
+                                if let Ok(result_data) = download_from_gcs_bucket(bucket_clone, clean_object_path).await {
+                                    println!("Successfully downloaded and parsed value set: {}", result_data);
+                                    results.push(result_data);
+                                } else {
+                                    println!("Failed to download value set object: {}", clean_object_path);
+                                }
+                            } else {
+                                println!("Object path doesn't start with expected prefix: {}", object_path);
+                            }
+                        }
+                    }
+                }
+                
+                println!("Returning {} value sets from bucket", results.len());
+                return Ok(results);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GCloud command failed with stderr: {}", stderr);
+                return Err(format!("GCloud command failed: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn list_gcs_bucket_results(
+    app: tauri::AppHandle,
+    bucket_name: String,
+    config_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    use tokio::process::Command;
+    
+    // Get gcloud token for authentication
+    let _token = get_gcloud_token(app).await?;
+    
+    // List objects in the bucket for this config
+    let prefix = format!("{}/", config_id);
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "ls", 
+                &format!("gs://{}/{}**", bucket_name, prefix)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut results = Vec::new();
+                
+                println!("GCS LS Output for prefix '{}': {}", prefix, stdout);
+                
+                for line in stdout.lines() {
+                    println!("Processing line: {}", line);
+                    if line.contains("saved-results") && line.ends_with(".json") {
+                        // Extract object path and download the file
+                        if let Some(object_path) = line.split_whitespace().last() {
+                            println!("Found object: {}", object_path);
+                            // Remove gs://bucket-name/ prefix to get just the object path
+                            let expected_prefix = format!("gs://{}/", bucket_name);
+                            if object_path.starts_with(&expected_prefix) {
+                                let clean_object_path = &object_path[expected_prefix.len()..];
+                                println!("Clean object path: {}", clean_object_path);
+                                let bucket_clone = bucket_name.clone();
+                                if let Ok(result_data) = download_from_gcs_bucket(bucket_clone, clean_object_path).await {
+                                    println!("Successfully downloaded and parsed: {}", result_data);
+                                    results.push(result_data);
+                                } else {
+                                    println!("Failed to download object: {}", clean_object_path);
+                                }
+                            } else {
+                                println!("Object path doesn't start with expected prefix: {}", object_path);
+                            }
+                        }
+                    }
+                }
+                
+                println!("Returning {} results from bucket", results.len());
+                return Ok(results);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GCloud command failed with stderr: {}", stderr);
+                return Err(format!("GCloud command failed: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "ls", 
+                &format!("gs://{}/{}**", bucket_name, prefix)
+            ]);
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut results = Vec::new();
+                
+                println!("GCS LS Output for prefix '{}': {}", prefix, stdout);
+                
+                for line in stdout.lines() {
+                    println!("Processing line: {}", line);
+                    if line.contains("saved-results") && line.ends_with(".json") {
+                        // Extract object path and download the file
+                        if let Some(object_path) = line.split_whitespace().last() {
+                            println!("Found object: {}", object_path);
+                            // Remove gs://bucket-name/ prefix to get just the object path
+                            let expected_prefix = format!("gs://{}/", bucket_name);
+                            if object_path.starts_with(&expected_prefix) {
+                                let clean_object_path = &object_path[expected_prefix.len()..];
+                                println!("Clean object path: {}", clean_object_path);
+                                let bucket_clone = bucket_name.clone();
+                                if let Ok(result_data) = download_from_gcs_bucket(bucket_clone, clean_object_path).await {
+                                    println!("Successfully downloaded and parsed: {}", result_data);
+                                    results.push(result_data);
+                                } else {
+                                    println!("Failed to download object: {}", clean_object_path);
+                                }
+                            } else {
+                                println!("Object path doesn't start with expected prefix: {}", object_path);
+                            }
+                        }
+                    }
+                }
+                
+                println!("Returning {} results from bucket", results.len());
+                return Ok(results);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GCloud command failed with stderr: {}", stderr);
+                return Err(format!("GCloud command failed: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+}
+
+async fn download_from_gcs_bucket(bucket_name: String, object_path: &str) -> Result<serde_json::Value, String> {
+    use tokio::process::Command;
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cat", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            println!("Executing: gcloud storage cat gs://{}/{}", bucket_name, object_path);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let json_str = String::from_utf8_lossy(&output.stdout);
+                println!("Raw JSON response: {}", json_str);
+                return serde_json::from_str(&json_str)
+                    .map_err(|e| format!("Failed to parse JSON: {}", e));
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("GCloud cat failed with stderr: {}", stderr);
+                return Err(format!("GCloud cat failed: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "storage", "cat", 
+                &format!("gs://{}/{}", bucket_name, object_path)
+            ]);
+            
+            let output = cmd.output().await
+                .map_err(|e| format!("Failed to execute gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let json_str = String::from_utf8_lossy(&output.stdout);
+                return serde_json::from_str(&json_str)
+                    .map_err(|e| format!("Failed to parse JSON: {}", e));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+}
+
 async fn generate_new_gcloud_token() -> Result<String, String> {
     use tokio::process::Command;
     use std::env;
@@ -448,7 +1202,7 @@ pub fn run() {
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data, read_package_json])
+        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, get_gcloud_account, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data, read_package_json, save_to_gcs_bucket, list_gcs_bucket_results, save_value_set_to_gcs_bucket, list_gcs_bucket_value_sets])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

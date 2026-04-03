@@ -7,6 +7,7 @@ interface Configuration {
   url: string;
   useDefaultAuth: boolean;
   headers: Array<{ name: string; value: string }>;
+  bucketName?: string;
 }
 
 interface TestResponse {
@@ -42,8 +43,10 @@ interface SavedResult {
     configId: string;
   };
   request: {
+    pathParams: Record<string, string>;
     queryParams: Record<string, string>;
     body: string;
+    sentUuid?: string; // UUID enviado no header da requisição
   };
   response: {
     status: number;
@@ -52,6 +55,8 @@ interface SavedResult {
     data: any;
   };
   timestamp: string;
+  storageLocation?: 'local' | 'bucket';
+  userAccount?: string;
 }
 
 interface SavedResults {
@@ -70,11 +75,13 @@ class ConfigManager {
   private readonly FONT_SIZE_KEY = 'openapiui-font-size';
   private defaultBodyValues = new Map<string, string>();
   private readonly APP_VERSION = '0.1.0'; // Versão atual do aplicativo
+  private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
     nameInput: document.querySelector("#config-name") as HTMLInputElement,
     urlInput: document.querySelector("#config-url") as HTMLInputElement,
+    bucketInput: document.querySelector("#config-bucket") as HTMLInputElement,
     authCheckbox: document.querySelector("#config-auth") as HTMLInputElement,
     headersList: document.querySelector("#headers-list") as HTMLDivElement,
     addHeaderBtn: document.querySelector("#add-header-btn") as HTMLButtonElement,
@@ -88,6 +95,9 @@ class ConfigManager {
     devtoolsBtn: document.querySelector("#devtools-btn") as HTMLButtonElement,
     themeToggleBtn: document.querySelector("#theme-toggle-btn") as HTMLButtonElement,
     aboutBtn: document.querySelector("#about-btn") as HTMLButtonElement,
+    extrasMenu: document.querySelector(".extras-menu") as HTMLDivElement,
+    extrasMenuBtn: document.querySelector("#extras-menu-btn") as HTMLButtonElement,
+    extrasDropdown: document.querySelector("#extras-dropdown") as HTMLDivElement,
     configModal: document.querySelector("#config-modal") as HTMLDivElement,
     closeModalBtn: document.querySelector("#close-modal") as HTMLButtonElement,
     aboutModal: document.querySelector("#about-modal") as HTMLDivElement,
@@ -101,7 +111,8 @@ class ConfigManager {
       this.loadSavedValueSets(),
       this.loadSavedResults(),
       this.loadTheme(),
-      this.loadFontSize()
+      this.loadFontSize(),
+      this.loadGcloudUser() // Carregar usuário gcloud no cache
     ]);
     this.setupEventListeners();
     this.updateConfigSelect();
@@ -142,6 +153,11 @@ class ConfigManager {
 
     this.elements.themeToggleBtn.addEventListener("click", () => {
       this.toggleTheme();
+    });
+
+    // Menu de Opções Extras
+    this.elements.extrasMenuBtn.addEventListener("click", () => {
+      this.toggleExtrasDropdown();
     });
 
     this.elements.fontSizeSelect.addEventListener("change", (e) => {
@@ -208,6 +224,23 @@ class ConfigManager {
         this.handleEscapeKey();
       }
     });
+
+    // Fechar dropdown clicando fora
+    document.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (!this.elements.extrasMenu.contains(target)) {
+        this.elements.extrasDropdown.classList.add('hidden');
+      }
+    });
+  }
+
+  private async loadGcloudUser() {
+    try {
+      this.cachedGcloudUser = await invoke<string>('get_gcloud_account');
+    } catch (error) {
+      console.warn('Could not load gcloud user on startup:', error);
+      this.cachedGcloudUser = null;
+    }
   }
 
   private async loadConfigs() {
@@ -716,6 +749,10 @@ class ConfigManager {
     document.body.style.overflow = '';
   }
 
+  private toggleExtrasDropdown() {
+    this.elements.extrasDropdown.classList.toggle('hidden');
+  }
+
   private handleEscapeKey() {
     // Verificar se algum modal está aberto e fechá-lo
     if (!this.elements.configModal.classList.contains('hidden')) {
@@ -731,16 +768,32 @@ class ConfigManager {
     if (historyModal) {
       this.closeHistoryModal(historyModal);
     }
+    
+    // Fechar dropdown de opções extras
+    if (!this.elements.extrasDropdown.classList.contains('hidden')) {
+      this.elements.extrasDropdown.classList.add('hidden');
+    }
   }
 
   private async handleSubmit() {
     const name = this.elements.nameInput.value.trim();
     const url = this.elements.urlInput.value.trim();
+    const bucketName = this.elements.bucketInput.value.trim() || undefined;
     const useDefaultAuth = this.elements.authCheckbox.checked;
     const headers = this.getHeadersFromForm();
 
     if (!name || !url) {
       return;
+    }
+
+    // Verificar se já existe configuração com a mesma URL (apenas para novas configurações)
+    if (!this.editingId) {
+      const normalizedUrlId = this.normalizeUrlToId(url);
+      const existingConfig = this.configs.find(c => c.id === normalizedUrlId);
+      if (existingConfig) {
+        this.showToast(`Já existe uma configuração para esta URL: ${existingConfig.name}`, 'error');
+        return;
+      }
     }
 
     if (this.editingId) {
@@ -750,15 +803,17 @@ class ConfigManager {
           id: this.editingId,
           name,
           url,
+          bucketName,
           useDefaultAuth,
           headers
         };
       }
     } else {
       const newConfig: Configuration = {
-        id: Date.now().toString(),
+        id: this.normalizeUrlToId(url),
         name,
         url,
+        bucketName,
         useDefaultAuth,
         headers
       };
@@ -791,6 +846,7 @@ class ConfigManager {
           <h4>${this.escapeHtml(config.name)}</h4>
           <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
           <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
+          ${config.bucketName ? `<p><strong>Bucket GCS:</strong> ${this.escapeHtml(config.bucketName)}</p>` : ''}
           ${config.headers && config.headers.length > 0 ? `
             <p><strong>Headers:</strong></p>
             <div class="config-headers">
@@ -833,6 +889,7 @@ class ConfigManager {
     this.editingId = id;
     this.elements.nameInput.value = config.name;
     this.elements.urlInput.value = config.url;
+    this.elements.bucketInput.value = config.bucketName || '';
     this.elements.authCheckbox.checked = config.useDefaultAuth;
     
     // Limpar campos de header existentes
@@ -874,7 +931,7 @@ class ConfigManager {
 
     // Adicionar event listeners para salvar conjuntos
     document.querySelectorAll('.save-set-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      const handleSaveSetClick = async (e: Event) => {
         const target = e.target as HTMLElement;
         const method = target.dataset.method;
         const path = target.dataset.path;
@@ -882,6 +939,36 @@ class ConfigManager {
         
         if (method && path && configId) {
           await this.saveValueSet(method, path, configId);
+        }
+      };
+      btn.addEventListener('click', handleSaveSetClick);
+    });
+
+    // Adicionar event listeners para salvar conjuntos no bucket
+    document.querySelectorAll('.save-set-bucket-btn').forEach(btn => {
+      const handleSaveSetBucketClick = async (e: Event) => {
+        const target = e.target as HTMLElement;
+        const method = target.dataset.method;
+        const path = target.dataset.path;
+        const configId = target.dataset.configId;
+        
+        if (method && path && configId) {
+          await this.saveValueSet(method, path, configId, 'bucket');
+        }
+      };
+      btn.addEventListener('click', handleSaveSetBucketClick);
+    });
+
+    // Adicionar event listeners para filtro de conjuntos
+    document.querySelectorAll('.saved-sets-filter').forEach(filter => {
+      filter.addEventListener('change', (e) => {
+        const target = e.target as HTMLSelectElement;
+        const method = target.dataset.method;
+        const path = target.dataset.path;
+        const configId = target.dataset.configId;
+        
+        if (method && path && configId) {
+          this.updateSavedSetsSelect(method, path, configId);
         }
       });
     });
@@ -928,7 +1015,7 @@ class ConfigManager {
     });
   }
 
-  private async saveValueSet(method: string, path: string, configId: string) {
+  private async saveValueSet(method: string, path: string, configId: string, saveType: 'local' | 'bucket' = 'local') {
     const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const nameInput = document.getElementById(`save-name-${method}-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
@@ -962,63 +1049,149 @@ class ConfigManager {
     const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
     const body = bodyTextarea?.value || '';
 
-    // Inicializar estrutura se não existir
-    if (!this.savedValueSets[configId]) {
-      this.savedValueSets[configId] = {};
-    }
-    if (!this.savedValueSets[configId][method]) {
-      this.savedValueSets[configId][method] = {};
-    }
-    if (!this.savedValueSets[configId][method][path]) {
-      this.savedValueSets[configId][method][path] = [];
-    }
+    if (saveType === 'bucket') {
+      // Salvar no bucket GCS
+      const config = this.configs.find(c => c.id === configId);
+      if (!config || !config.bucketName) {
+        this.showToast('Configuração não possui bucket GCS configurado.', 'error');
+        return;
+      }
 
-    // Verificar se já existe um conjunto com o mesmo nome
-    const existingIndex = this.savedValueSets[configId][method][path].findIndex(set => set.name === name);
-    
-    if (existingIndex !== -1) {
-      // Substituir o conjunto existente
-      this.savedValueSets[configId][method][path][existingIndex] = {
-        ...this.savedValueSets[configId][method][path][existingIndex],
-        pathParams,
-        queryParams,
-        body,
-        createdAt: new Date().toISOString()
-      };
-      this.showToast('Conjunto de valores atualizado com sucesso!', 'success');
+      try {
+        // Obter conta do usuário para adicionar ao resultado
+        const userAccount = await invoke<string>('get_gcloud_account');
+        
+        // Preparar dados para salvar no bucket
+        const valueSetData = {
+          id: Date.now().toString(),
+          name,
+          pathParams,
+          queryParams,
+          body,
+          createdAt: new Date().toISOString(),
+          endpoint: {
+            method,
+            path
+          },
+          userAccount,
+          savedIn: 'bucket'
+        };
+
+        // Salvar no bucket
+        const objectPath = await invoke<string>('save_value_set_to_gcs_bucket', {
+          bucketName: config.bucketName,
+          configId,
+          endpointMethod: method,
+          endpointPath: path,
+          valueSetData
+        });
+
+        this.showToast(`Conjunto de valores salvo no bucket com sucesso! (${objectPath})`, 'success');
+        
+        // Atualizar o select para incluir os conjuntos do bucket
+        this.updateSavedSetsSelect(method, path, configId);
+        
+      } catch (error) {
+        console.error('Failed to save value set to GCS bucket:', error);
+        this.showToast(`Erro ao salvar no bucket: ${String(error)}`, 'error');
+      }
     } else {
-      // Criar novo conjunto
-      const savedSet: SavedValueSet = {
-        id: Date.now().toString(),
-        name,
-        pathParams,
-        queryParams,
-        body,
-        createdAt: new Date().toISOString()
-      };
+      // Salvar localmente (código existente)
+      // Inicializar estrutura se não existir
+      if (!this.savedValueSets[configId]) {
+        this.savedValueSets[configId] = {};
+      }
+      if (!this.savedValueSets[configId][method]) {
+        this.savedValueSets[configId][method] = {};
+      }
+      if (!this.savedValueSets[configId][method][path]) {
+        this.savedValueSets[configId][method][path] = [];
+      }
 
-      // Adicionar o conjunto salvo
-      this.savedValueSets[configId][method][path].push(savedSet);
-      this.showToast('Conjunto de valores salvo com sucesso!', 'success');
+      // Verificar se já existe um conjunto com o mesmo nome
+      const existingIndex = this.savedValueSets[configId][method][path].findIndex(set => set.name === name);
+      
+      if (existingIndex !== -1) {
+        // Substituir o conjunto existente
+        this.savedValueSets[configId][method][path][existingIndex] = {
+          ...this.savedValueSets[configId][method][path][existingIndex],
+          pathParams,
+          queryParams,
+          body,
+          createdAt: new Date().toISOString()
+        };
+        this.showToast('Conjunto de valores atualizado com sucesso!', 'success');
+      } else {
+        // Criar novo conjunto
+        const savedSet: SavedValueSet = {
+          id: Date.now().toString(),
+          name,
+          pathParams,
+          queryParams,
+          body,
+          createdAt: new Date().toISOString()
+        };
+
+        // Adicionar o conjunto salvo
+        this.savedValueSets[configId][method][path].push(savedSet);
+        this.showToast('Conjunto de valores salvo com sucesso!', 'success');
+      }
+      
+      // Salvar no app_data_dir
+      await this.saveSavedValueSets();
+      
+      // Atualizar o select
+      this.updateSavedSetsSelect(method, path, configId);
     }
-    
-    // Salvar no app_data_dir
-    await this.saveSavedValueSets();
-    
-    // Manter o nome preenchido (não limpar o input)
-    // nameInput.value = ''; // Removido para manter o nome
-    
-    // Atualizar o select
-    this.updateSavedSetsSelect(method, path, configId);
   }
 
-  private loadValueSet(method: string, path: string, configId: string, savedSetId: string) {
+  private async loadValueSet(method: string, path: string, configId: string, savedSetId: string) {
     const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
-    const savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === savedSetId);
     
-    if (!savedSet) {
-      console.error('Conjunto salvo não encontrado:', savedSetId);
-      return;
+    // Verificar se é um conjunto do bucket ou local
+    const isBucketSet = savedSetId.startsWith('bucket-');
+    const actualId = isBucketSet ? savedSetId.substring(7) : savedSetId.substring(6); // Remove "bucket-" ou "local-"
+    
+    let savedSet: any;
+    
+    if (isBucketSet) {
+      // Carregar conjunto do bucket
+      try {
+        const config = this.configs.find(c => c.id === configId);
+        if (!config || !config.bucketName) {
+          this.showToast('Configuração não possui bucket GCS configurado.', 'error');
+          return;
+        }
+        
+        const bucketSets = await invoke<Array<any>>('list_gcs_bucket_value_sets', {
+          bucketName: config.bucketName,
+          configId
+        });
+        
+        // Filtrar apenas os conjuntos deste endpoint e encontrar o ID correspondente
+        const endpointBucketSets = bucketSets.filter(set => 
+          set.endpoint?.method === method && set.endpoint?.path === path
+        );
+        
+        savedSet = endpointBucketSets.find(set => set.id === actualId);
+        
+        if (!savedSet) {
+          console.error('Conjunto do bucket não encontrado:', actualId);
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to load bucket value set:', error);
+        this.showToast('Erro ao carregar conjunto do bucket.', 'error');
+        return;
+      }
+    } else {
+      // Carregar conjunto local
+      savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === actualId);
+      
+      if (!savedSet) {
+        console.error('Conjunto salvo não encontrado:', actualId);
+        return;
+      }
     }
 
     // Preencher path params
@@ -1026,16 +1199,18 @@ class ConfigManager {
       const inputId = `path-param-${param}-${pathId}`;
       const input = document.getElementById(inputId) as HTMLInputElement;
       if (input) {
-        input.value = value;
-        input.setAttribute('value', value);
+        input.value = String(value);
+        input.setAttribute('value', String(value));
       }
     });
 
     // Preencher query params
     Object.entries(savedSet.queryParams).forEach(([param, value]) => {
-      const input = document.getElementById(`param-${param}-${pathId}`) as HTMLInputElement;
+      const inputId = `param-${param}-${pathId}`;
+      const input = document.getElementById(inputId) as HTMLInputElement;
       if (input) {
-        input.value = value;
+        input.value = String(value);
+        input.setAttribute('value', String(value));
       }
     });
 
@@ -1052,22 +1227,70 @@ class ConfigManager {
     }
   }
 
-  private updateSavedSetsSelect(method: string, path: string, configId: string) {
+  private async updateSavedSetsSelect(method: string, path: string, configId: string) {
     const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const select = document.getElementById(`saved-sets-${method}-${pathId}`) as HTMLSelectElement;
+    const filter = document.getElementById(`saved-sets-filter-${method}-${pathId}`) as HTMLSelectElement;
+    const loadingIndicator = document.getElementById(`loading-${method}-${pathId}`);
     
-    if (!select) return;
+    if (!select || !filter) return;
 
-    const savedSets = this.savedValueSets[configId]?.[method]?.[path] || [];
+    const filterType = filter.value;
+    
+    // Mostrar indicador de carregamento se estiver carregando do bucket
+    if (filterType === 'todos' || filterType === 'bucket') {
+      const config = this.configs.find(c => c.id === configId);
+      if (config && config.bucketName && loadingIndicator) {
+        loadingIndicator.style.display = 'inline-flex';
+      }
+    }
     
     select.innerHTML = '<option value="">Selecione um conjunto salvo...</option>';
     
-    savedSets.forEach(savedSet => {
-      const option = document.createElement('option');
-      option.value = savedSet.id;
-      option.textContent = `${savedSet.name} (${new Date(savedSet.createdAt).toLocaleDateString()})`;
-      select.appendChild(option);
-    });
+    // Adicionar conjuntos locais
+    if (filterType === 'todos' || filterType === 'local') {
+      const localSets = this.savedValueSets[configId]?.[method]?.[path] || [];
+      localSets.forEach(savedSet => {
+        const option = document.createElement('option');
+        option.value = `local-${savedSet.id}`;
+        option.textContent = `${savedSet.name} (${new Date(savedSet.createdAt).toLocaleDateString()}) [Local]`;
+        select.appendChild(option);
+      });
+    }
+    
+    // Adicionar conjuntos do bucket
+    if (filterType === 'todos' || filterType === 'bucket') {
+      try {
+        const config = this.configs.find(c => c.id === configId);
+        if (config && config.bucketName) {
+          const bucketSets = await invoke<Array<any>>('list_gcs_bucket_value_sets', {
+            bucketName: config.bucketName,
+            configId
+          });
+          
+          // Filtrar apenas os conjuntos deste endpoint
+          const endpointBucketSets = bucketSets.filter(set => 
+            set.endpoint?.method === method && set.endpoint?.path === path
+          );
+          
+          endpointBucketSets.forEach(savedSet => {
+            const option = document.createElement('option');
+            option.value = `bucket-${savedSet.id}`;
+            const userInfo = savedSet.userAccount ? ` [${savedSet.userAccount}]` : '';
+            option.textContent = `${savedSet.name} (${new Date(savedSet.createdAt).toLocaleDateString()}) [Bucket]${userInfo}`;
+            select.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load bucket value sets:', error);
+        // Não mostrar erro ao usuário, apenas não carregar os conjuntos do bucket
+      }
+    }
+    
+    // Ocultar indicador de carregamento
+    if (loadingIndicator) {
+      loadingIndicator.style.display = 'none';
+    }
   }
 
   private async deleteValueSet(method: string, path: string, configId: string) {
@@ -1080,7 +1303,16 @@ class ConfigManager {
       return;
     }
 
-    const savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === selectedId);
+    // Verificar se é um conjunto do bucket ou local
+    const isBucketSet = selectedId.startsWith('bucket-');
+    
+    if (isBucketSet) {
+      this.showToast('Conjuntos do bucket não podem ser excluídos diretamente. Use o console do Google Cloud para gerenciar os arquivos.', 'error');
+      return;
+    }
+
+    const actualId = selectedId.substring(6); // Remove "local-"
+    const savedSet = this.savedValueSets[configId]?.[method]?.[path]?.find(set => set.id === actualId);
     
     if (!savedSet) {
       this.showToast('Conjunto não encontrado.', 'error');
@@ -1096,7 +1328,7 @@ class ConfigManager {
 
     // Remover o conjunto
     const sets = this.savedValueSets[configId][method][path];
-    const index = sets.findIndex(set => set.id === selectedId);
+    const index = sets.findIndex(set => set.id === actualId);
     
     if (index !== -1) {
       sets.splice(index, 1);
@@ -1117,14 +1349,17 @@ class ConfigManager {
     }
   }
 
-  private attachResultEventListeners(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
-    // Event listener para salvar resultado
-    const saveBtn = document.querySelector(`[data-method="${method}"][data-path="${path}"][data-config-id="${configId}"].save-result-btn`) as HTMLButtonElement;
-    if (saveBtn) {
-      saveBtn.addEventListener('click', async () => {
-        await this.saveTestResult(method, path, configId, queryParams, body, response, timestamp);
-      });
-    }
+  private attachResultEventListeners(method: string, path: string, configId: string, _pathParams: Record<string, string>, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string, sentUuid?: string) {
+    // Event listeners para salvar teste (local e bucket)
+    const saveBtns = document.querySelectorAll(`[data-method="${method}"][data-path="${path}"][data-config-id="${configId}"].save-result-btn`) as NodeListOf<HTMLButtonElement>;
+    saveBtns.forEach(saveBtn => {
+      if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+          const saveType = saveBtn.dataset.saveType as 'local' | 'bucket';
+          await this.saveTestResult(method, path, configId, queryParams, body, response, timestamp, saveType, sentUuid);
+        });
+      }
+    });
 
     // Event listener para exibir histórico
     const historyBtn = document.querySelector(`[data-method="${method}"][data-path="${path}"][data-config-id="${configId}"].show-history-btn`) as HTMLButtonElement;
@@ -1214,7 +1449,7 @@ class ConfigManager {
     }
   }
 
-  private async saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string) {
+  private async saveTestResult(method: string, path: string, configId: string, queryParams: Record<string, string>, body: string, response: TestResponse, timestamp: string, saveType: 'local' | 'bucket' = 'local', sentUuid?: string) {
     const pathId = `${method.toLowerCase()}-${path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     const nameInput = document.getElementById(`result-name-${pathId}`) as HTMLInputElement;
     const name = nameInput?.value?.trim();
@@ -1223,6 +1458,16 @@ class ConfigManager {
       this.showToast('Por favor, digite um nome para este resultado.', 'error');
       return;
     }
+
+    // Coletar path params atuais
+    const pathParams: Record<string, string> = {};
+    document.querySelectorAll(`[data-path-param="${method}-${pathId}"]`).forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      const value = (input as HTMLInputElement).value;
+      if (param) {
+        pathParams[param] = value;
+      }
+    });
 
     // Criar o resultado salvo
     const savedResult: SavedResult = {
@@ -1234,8 +1479,10 @@ class ConfigManager {
         configId
       },
       request: {
+        pathParams,
         queryParams,
-        body
+        body,
+        sentUuid // UUID enviado no header da requisição
       },
       response: {
         status: response.status || 200,
@@ -1243,21 +1490,77 @@ class ConfigManager {
         headers: response.headers || {},
         data: response.data
       },
-      timestamp
+      timestamp,
+      storageLocation: saveType
     };
 
-    // Inicializar estrutura se não existir
-    if (!this.savedResults[configId]) {
-      this.savedResults[configId] = [];
-    }
+    if (saveType === 'bucket') {
+      // Salvar no bucket GCS
+      const config = this.configs.find(c => c.id === configId);
+      if (!config || !config.bucketName) {
+        this.showToast('Configuração não possui bucket GCS configurado.', 'error');
+        return;
+      }
 
-    // Adicionar o resultado salvo
-    this.savedResults[configId].push(savedResult);
-    
-    // Salvar no app_data_dir
-    await this.saveSavedResults();
-    
-    this.showToast('Resultado salvo com sucesso!', 'success');
+      try {
+        // Usar usuário cacheado ou obter se não disponível
+        let userAccount = this.cachedGcloudUser;
+        if (!userAccount) {
+          userAccount = await invoke<string>('get_gcloud_account');
+          this.cachedGcloudUser = userAccount; // Atualizar cache
+        }
+        
+        // Adicionar informação do usuário ao resultado
+        savedResult.userAccount = userAccount;
+
+        // Salvar no bucket
+        await invoke<string>('save_to_gcs_bucket', {
+          bucketName: config.bucketName,
+          configId,
+          endpointMethod: method,
+          endpointPath: path,
+          resultData: savedResult
+        });
+
+        this.showToast(`Resultado salvo no bucket "${config.bucketName}" com sucesso!`, 'success');
+        
+        // Refresh history modal if it's open
+        const historyModal = document.querySelector('.history-modal') as HTMLElement;
+        if (historyModal) {
+          const select = document.querySelector('#history-endpoint-select') as HTMLSelectElement;
+          const searchInput = document.getElementById('history-search-input') as HTMLInputElement;
+          const searchFilter = searchInput?.value || '';
+          const endpointFilter = select?.value || '';
+          const sourceSelect = document.querySelector('#history-source-select') as HTMLSelectElement;
+          const sourceFilter = sourceSelect?.value || 'todos';
+          await this.displayHistoryResults(configId, endpointFilter, searchFilter, '', sourceFilter);
+        }
+      } catch (error) {
+        console.error('Failed to save to GCS bucket:', error);
+        this.showToast(`Erro ao salvar no bucket: ${String(error)}`, 'error');
+      }
+    } else {
+      // Salvar localmente (código existente)
+      if (!this.savedResults[configId]) {
+        this.savedResults[configId] = [];
+      }
+
+      this.savedResults[configId].push(savedResult);
+      await this.saveSavedResults();
+      this.showToast('Resultado salvo localmente com sucesso!', 'success');
+      
+      // Refresh history modal if it's open
+      const historyModal = document.querySelector('.history-modal') as HTMLElement;
+      if (historyModal) {
+        const select = document.querySelector('#history-endpoint-select') as HTMLSelectElement;
+        const searchInput = document.getElementById('history-search-input') as HTMLInputElement;
+        const searchFilter = searchInput?.value || '';
+        const endpointFilter = select?.value || '';
+        const sourceSelect = document.querySelector('#history-source-select') as HTMLSelectElement;
+        const sourceFilter = sourceSelect?.value || 'todos';
+        await this.displayHistoryResults(configId, endpointFilter, searchFilter, '', sourceFilter);
+      }
+    }
   }
 
   private showHistoryModal(configId: string) {
@@ -1271,11 +1574,27 @@ class ConfigManager {
           <button class="close-btn">&times;</button>
         </div>
         <div class="modal-body">
-          <div class="history-controls">
-            <label for="history-endpoint-select">Selecione o endpoint:</label>
-            <select id="history-endpoint-select" class="history-endpoint-select">
-              <option value="">Todos os endpoints</option>
-            </select>
+          <div class="history-controls-row">
+            <div class="history-control-group">
+              <label for="history-endpoint-select">Selecione o endpoint:</label>
+              <select id="history-endpoint-select" class="history-endpoint-select">
+                <option value="">Todos os endpoints</option>
+              </select>
+            </div>
+            <div class="history-control-group">
+              <label for="history-user-select">Filtrar por usuário:</label>
+              <select id="history-user-select" class="history-user-select">
+                <option value="">Todos os usuários</option>
+              </select>
+            </div>
+            <div class="history-control-group">
+              <label for="history-source-select">Origem do histórico:</label>
+              <select id="history-source-select" class="history-source-select">
+                <option value="todos">Todos</option>
+                <option value="local">Apenas local</option>
+                <option value="bucket">Apenas bucket</option>
+              </select>
+            </div>
           </div>
           <div class="history-controls">
             <label for="history-search-input">Buscar nos resultados:</label>
@@ -1310,27 +1629,111 @@ class ConfigManager {
     }, 10);
   }
 
-  private populateHistoryEndpoints(configId: string) {
-    const select = document.getElementById('history-endpoint-select') as HTMLSelectElement;
-    if (!select) return;
+  private async populateHistoryEndpoints(configId: string) {
+    const endpointSelect = document.getElementById('history-endpoint-select') as HTMLSelectElement;
+    const userSelect = document.getElementById('history-user-select') as HTMLSelectElement;
+    
+    if (!endpointSelect || !userSelect) return;
 
-    const results = this.savedResults[configId] || [];
+    // Mostrar indicadores de carregamento nos selects
+    endpointSelect.innerHTML = '<option value="">Carregando...</option>';
+    userSelect.innerHTML = '<option value="">Carregando...</option>';
+    
+    // Coletar endpoints e usuários de TODOS os resultados (locais + bucket)
+    const config = this.configs.find(c => c.id === configId);
+    const allResults: SavedResult[] = [];
     const endpoints = new Set<string>();
-
-    results.forEach(result => {
+    const users = new Set<string>();
+    
+    // Adicionar resultados locais
+    const localResults = this.savedResults[configId] || [];
+    allResults.push(...localResults.map(r => ({ ...r, storageLocation: 'local' as const })));
+    
+    // Adicionar resultados do bucket se configurado
+    if (config && config.bucketName) {
+      try {
+        const bucketResults = await invoke<SavedResult[]>('list_gcs_bucket_results', {
+          bucketName: config.bucketName,
+          configId
+        });
+        
+        // Marcar resultados do bucket
+        const bucketResultsWithLocation = bucketResults.map(r => ({ 
+          ...r, 
+          storageLocation: 'bucket' as const,
+          userAccount: r.userAccount || 'unknown'
+        }));
+        
+        allResults.push(...bucketResultsWithLocation);
+      } catch (error) {
+        console.error('Failed to load bucket results:', error);
+        // Não mostrar erro ao usuário, apenas não incluir resultados do bucket
+      }
+    }
+    
+    // Coletar endpoints e usuários únicos de TODOS os resultados
+    let currentUserGcloudAccount: string | null = null;
+    
+    // Obter conta gcloud atual para resultados locais
+    try {
+      currentUserGcloudAccount = await this.getCurrentUserName();
+    } catch (error) {
+      console.warn('Could not get current gcloud account:', error);
+    }
+    
+    allResults.forEach(result => {
       const endpointKey = `${result.endpoint.method} ${result.endpoint.path}`;
       endpoints.add(endpointKey);
+      
+      // Para resultados locais, usar a conta gcloud atual como usuário
+      // Para resultados do bucket, usar o userAccount salvo
+      const userAccount = result.storageLocation === 'local' 
+        ? currentUserGcloudAccount 
+        : result.userAccount;
+        
+      if (userAccount) {
+        users.add(userAccount);
+      }
     });
-
+    
+    // Popular select de endpoints
+    endpointSelect.innerHTML = '<option value="">Todos os endpoints</option>';
     endpoints.forEach(endpoint => {
       const option = document.createElement('option');
       option.value = endpoint;
       option.textContent = endpoint;
-      select.appendChild(option);
+      endpointSelect.appendChild(option);
+    });
+    
+    // Popular select de usuários
+    userSelect.innerHTML = '<option value="">Todos os usuários</option>';
+    
+    // Adicionar usuários em ordem alfabética
+    const sortedUsers = Array.from(users).filter(user => user && user !== 'desconhecido').sort();
+    sortedUsers.forEach(user => {
+      const option = document.createElement('option');
+      option.value = user;
+      option.textContent = `👤 ${user}`;
+      userSelect.appendChild(option);
     });
   }
 
-  private setupHistoryModalListeners(modal: HTMLElement, configId: string) {
+  private getCurrentUserName(): Promise<string> {
+    // Retornar valor cacheado se disponível
+    if (this.cachedGcloudUser) {
+      return Promise.resolve(this.cachedGcloudUser);
+    }
+    
+    // Fallback: tentar obter o nome do usuário atual do sistema
+    try {
+      return invoke<string>('get_gcloud_account');
+    } catch (error) {
+      console.warn('Could not get current user:', error);
+      return Promise.resolve('desconhecido');
+    }
+  }
+
+  private async setupHistoryModalListeners(modal: HTMLElement, configId: string) {
     // Fechar modal
     const closeBtn = modal.querySelector('.close-btn') as HTMLButtonElement;
     closeBtn.addEventListener('click', () => {
@@ -1338,49 +1741,31 @@ class ConfigManager {
     });
 
     // Fechar clicando fora
-    modal.addEventListener('click', (e) => {
+    modal.addEventListener('click', async (e) => {
       if (e.target === modal) {
-        this.closeHistoryModal(modal);
+        await this.closeHistoryModal(modal);
       }
     });
 
-    // Mudança no select de endpoint
-    const select = modal.querySelector('#history-endpoint-select') as HTMLSelectElement;
-    select.addEventListener('change', () => {
-      const searchInput = document.getElementById('history-search-input') as HTMLInputElement;
-      const searchFilter = searchInput?.value || '';
-      this.displayHistoryResults(configId, select.value, searchFilter);
-      // Adicionar listeners para os novos botões de copiar
-      this.attachCopyButtonsListeners();
-      // Adicionar listeners para os novos botões de exclusão
-      modal.querySelectorAll('.delete-result-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const target = e.target as HTMLElement;
-          const resultId = target.dataset.resultId;
-          const btnConfigId = target.dataset.configId;
-          
-          if (resultId && btnConfigId) {
-            await this.deleteSavedResult(resultId, btnConfigId);
-          }
-        });
-      });
-    });
-
-    // Event listeners para o campo de busca
+    // Event listeners para os campos de filtro
     const searchInput = modal.querySelector('#history-search-input') as HTMLInputElement;
     const clearBtn = modal.querySelector('.history-search-clear') as HTMLButtonElement;
+    const endpointSelect = modal.querySelector('#history-endpoint-select') as HTMLSelectElement;
+    const userSelect = modal.querySelector('#history-user-select') as HTMLSelectElement;
+    const sourceSelect = modal.querySelector('#history-source-select') as HTMLSelectElement;
     
-    if (searchInput && clearBtn) {
-      const performHistorySearch = () => {
+    if (searchInput && clearBtn && endpointSelect && userSelect && sourceSelect) {
+      const performHistorySearch = async () => {
         const searchFilter = searchInput.value.trim();
-        const endpointFilter = select.value;
-        this.displayHistoryResults(configId, endpointFilter, searchFilter);
+        const endpointFilter = endpointSelect.value;
+        const userFilter = userSelect.value;
+        const sourceFilter = sourceSelect.value;
+        await this.displayHistoryResults(configId, endpointFilter, searchFilter, userFilter, sourceFilter);
         
         // Re-adicionar listeners para os novos botões
         this.attachCopyButtonsListeners();
-        modal.querySelectorAll('.delete-result-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
+        modal.querySelectorAll('.delete-result-btn').forEach((btn) => {
+          btn.addEventListener('click', async e => {
             e.stopPropagation();
             const target = e.target as HTMLElement;
             const resultId = target.dataset.resultId;
@@ -1393,7 +1778,10 @@ class ConfigManager {
         });
       };
 
+      // Event listeners para busca e usuário
       searchInput.addEventListener('input', performHistorySearch);
+      userSelect.addEventListener('change', performHistorySearch);
+      sourceSelect.addEventListener('change', performHistorySearch);
       
       searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
@@ -1410,7 +1798,7 @@ class ConfigManager {
     }
 
     // Exibir todos os resultados inicialmente
-    this.displayHistoryResults(configId, '');
+    await this.displayHistoryResults(configId, '', '', '', 'todos');
     
     // Adicionar event listeners para os botões de copiar
     this.attachCopyButtonsListeners();
@@ -1517,7 +1905,7 @@ class ConfigManager {
     });
   }
 
-  private closeHistoryModal(modal: HTMLElement) {
+  private async closeHistoryModal(modal: HTMLElement) {
     modal.classList.add('hidden');
     document.body.style.overflow = '';
     setTimeout(() => {
@@ -1525,16 +1913,53 @@ class ConfigManager {
     }, 300);
   }
 
-  private displayHistoryResults(configId: string, endpointFilter: string, searchFilter: string = '') {
+  private async displayHistoryResults(configId: string, endpointFilter: string, searchFilter: string = '', userFilter: string = '', sourceFilter: string = 'todos') {
     const listContainer = document.querySelector('.history-list') as HTMLElement;
     if (!listContainer) return;
 
-    const results = this.savedResults[configId] || [];
-    
+    // Mostrar indicador de carregamento
+    listContainer.innerHTML = `
+      <div class="history-loading">
+        <div class="loading-spinner"></div>
+        <p>Carregando resultados...</p>
+      </div>
+    `;
+
+    const config = this.configs.find(c => c.id === configId);
+    let allResults: SavedResult[] = [];
+
+    // Adicionar resultados locais (apenas se sourceFilter for 'todos' ou 'local')
+    if (sourceFilter === 'todos' || sourceFilter === 'local') {
+      const localResults = this.savedResults[configId] || [];
+      allResults.push(...localResults.map(r => ({ ...r, storageLocation: r.storageLocation || 'local' as const })));
+    }
+
+    // Adicionar resultados do bucket se configurado (apenas se sourceFilter for 'todos' ou 'bucket')
+    if ((sourceFilter === 'todos' || sourceFilter === 'bucket') && config && config.bucketName) {
+      try {
+        const bucketResults = await invoke<SavedResult[]>('list_gcs_bucket_results', {
+          bucketName: config.bucketName,
+          configId
+        });
+        
+        // Marcar resultados do bucket
+        const bucketResultsWithLocation = bucketResults.map(r => ({ 
+          ...r, 
+          storageLocation: 'bucket' as const,
+          userAccount: r.userAccount || 'unknown'
+        }));
+        
+        allResults.push(...bucketResultsWithLocation);
+      } catch (error) {
+        console.error('Failed to load bucket results:', error);
+        // Não mostrar erro ao usuário, apenas não incluir resultados do bucket
+      }
+    }
+
     // Filtrar por endpoint se necessário
     let filteredResults = endpointFilter 
-      ? results.filter(result => `${result.endpoint.method} ${result.endpoint.path}` === endpointFilter)
-      : results;
+      ? allResults.filter(result => `${result.endpoint.method} ${result.endpoint.path}` === endpointFilter)
+      : allResults;
 
     // Filtrar por termo de busca se necessário
     if (searchFilter) {
@@ -1559,6 +1984,15 @@ class ConfigManager {
           if (queryParamsStr.toLowerCase().includes(searchLower)) return true;
         }
         
+        // Buscar nos path params
+        if (result.request.pathParams) {
+          const pathParamsStr = JSON.stringify(result.request.pathParams);
+          if (pathParamsStr.toLowerCase().includes(searchLower)) return true;
+        }
+        
+        // Buscar no UUID enviado
+        if (result.request.sentUuid && result.request.sentUuid.toLowerCase().includes(searchLower)) return true;
+        
         // Buscar no body
         if (result.request.body && result.request.body.toLowerCase().includes(searchLower)) return true;
         
@@ -1568,6 +2002,35 @@ class ConfigManager {
           if (headersStr.toLowerCase().includes(searchLower)) return true;
         }
         
+        // Buscar na conta do usuário (para resultados do bucket)
+        if (result.userAccount && result.userAccount.toLowerCase().includes(searchLower)) return true;
+        
+        return false;
+      });
+    }
+
+    // Filtrar por usuário se necessário
+    if (userFilter) {
+      // Obter conta gcloud atual para comparar com resultados locais
+      let currentUserGcloudAccount: string | null = null;
+      try {
+        currentUserGcloudAccount = await this.getCurrentUserName();
+      } catch (error) {
+        console.warn('Could not get current gcloud account for filtering:', error);
+      }
+      
+      filteredResults = filteredResults.filter(result => {
+        // Para resultados locais, mostrar apenas se o filtro corresponder à conta gcloud atual
+        if (result.storageLocation === 'local') {
+          return currentUserGcloudAccount === userFilter;
+        }
+        
+        // Para resultados do bucket, verificar userAccount
+        if (result.storageLocation === 'bucket' && result.userAccount) {
+          return result.userAccount === userFilter;
+        }
+        
+        // Se não houver correspondência, não mostrar
         return false;
       });
     }
@@ -1608,25 +2071,49 @@ class ConfigManager {
     };
 
     listContainer.innerHTML = sortedResults.map(result => `
-      <div class="history-item collapsed" data-result-id="${result.id}">
+      <div class="history-item collapsed" data-result-id="${result.id}" data-storage-location="${result.storageLocation || 'local'}">
+        <div id="result-name-${result.id}" style="display: none;">${this.escapeHtml(result.name)}</div>
         <div class="history-header" onclick="this.parentElement.classList.toggle('collapsed')">
           <div class="history-title">
-            <h4>${highlightSearchTerm(result.name)}</h4>
+            <div class="title-with-copy">
+              <h4>${highlightSearchTerm(result.name)}</h4>
+              <button class="copy-btn copy-title-btn" data-target="result-name-${result.id}" title="Copiar nome do resultado" onclick="event.stopPropagation()">❐</button>
+            </div>
             <div class="history-meta">
               <span class="history-endpoint">${highlightSearchTerm(`${result.endpoint.method} ${result.endpoint.path}`)}</span>
               <span class="history-timestamp">${new Date(result.timestamp).toLocaleString('pt-BR')}</span>
+              ${result.storageLocation === 'bucket' ? `
+                <span class="history-storage-indicator bucket" title="Salvo no bucket GCS">
+                  🗂️ Bucket
+                </span>
+                ${result.userAccount ? `
+                  <span class="history-user" title="Salvo por: ${result.userAccount}">
+                    👤 ${highlightSearchTerm(result.userAccount)}
+                  </span>
+                ` : ''}
+              ` : `
+                <span class="history-storage-indicator local" title="Salvo localmente">
+                  💻 Local
+                </span>
+              `}
             </div>
           </div>
           <div class="history-actions">
-            <button 
-              class="delete-result-btn" 
-              data-result-id="${result.id}"
-              data-config-id="${configId}"
-              title="Excluir resultado"
-              onclick="event.stopPropagation()"
-            >
-              🗑️
-            </button>
+            ${result.storageLocation === 'local' ? `
+              <button 
+                class="delete-result-btn" 
+                data-result-id="${result.id}"
+                data-config-id="${configId}"
+                title="Excluir resultado"
+                onclick="event.stopPropagation()"
+              >
+                🗑️
+              </button>
+            ` : `
+              <span class="bucket-result-info" title="Resultados do bucket não podem ser excluídos localmente">
+                🗂️
+              </span>
+            `}
             <span class="history-expand-icon">▶</span>
           </div>
         </div>
@@ -1634,6 +2121,15 @@ class ConfigManager {
           <div class="history-content-inner">
             <div class="history-request">
               <h5>Request:</h5>
+              ${Object.keys(result.request.pathParams).length > 0 ? `
+                <div class="history-section">
+                  <div class="section-header">
+                    <p><strong>Path Params:</strong></p>
+                    <button class="copy-btn" data-target="history-path-${result.id}">📋 Copiar</button>
+                  </div>
+                  <pre id="history-path-${result.id}">${this.escapeHtml(JSON.stringify(result.request.pathParams, null, 2))}</pre>
+                </div>
+              ` : ''}
               ${Object.keys(result.request.queryParams).length > 0 ? `
                 <div class="history-section">
                   <div class="section-header">
@@ -1641,6 +2137,15 @@ class ConfigManager {
                     <button class="copy-btn" data-target="history-query-${result.id}">📋 Copiar</button>
                   </div>
                   <pre id="history-query-${result.id}">${this.escapeHtml(JSON.stringify(result.request.queryParams, null, 2))}</pre>
+                </div>
+              ` : ''}
+              ${result.request.sentUuid ? `
+                <div class="history-section">
+                  <div class="section-header">
+                    <p><strong>UUID Enviado:</strong></p>
+                    <button class="copy-btn" data-target="history-uuid-${result.id}">📋 Copiar</button>
+                  </div>
+                  <pre id="history-uuid-${result.id}">${this.escapeHtml(result.request.sentUuid)}</pre>
                 </div>
               ` : ''}
               ${result.request.body ? `
@@ -1736,12 +2241,16 @@ class ConfigManager {
 
       // Processar headers personalizados com suporte a UUID
       const processedHeaders: Record<string, string> = {};
+      let sentUuid: string | undefined; // Capturar UUID enviado no header
+      
       if (config.headers && config.headers.length > 0) {
         config.headers.forEach(header => {
           if (header.name && header.value) {
             // Se o valor for exatamente "uuid", gerar um UUID
             if (header.value.toLowerCase() === 'uuid') {
-              processedHeaders[header.name] = this.generateUUID();
+              const uuid = this.generateUUID();
+              processedHeaders[header.name] = uuid;
+              sentUuid = uuid; // Armazenar UUID enviado
             } else {
               processedHeaders[header.name] = header.value;
             }
@@ -1775,15 +2284,29 @@ class ConfigManager {
                     placeholder="Nome do resultado..."
                     value="Resultado_${new Date().toLocaleString('pt-BR').replace(/[^\w]/g, '_')}"
                   />
-                  <button 
-                    class="save-result-btn" 
-                    data-method="${method}"
-                    data-path="${path}"
-                    data-config-id="${configId}"
-                    data-timestamp="${timestamp}"
-                  >
-                    Salvar Resultado
-                  </button>
+                  <div class="save-buttons-row">
+                    <button 
+                      class="save-result-btn save-local-btn" 
+                      data-method="${method}"
+                      data-path="${path}"
+                      data-config-id="${configId}"
+                      data-timestamp="${timestamp}"
+                      data-save-type="local"
+                    >
+                      Salvar local
+                    </button>
+                    <button 
+                      class="save-result-btn save-bucket-btn" 
+                      data-method="${method}"
+                      data-path="${path}"
+                      data-config-id="${configId}"
+                      data-timestamp="${timestamp}"
+                      data-save-type="bucket"
+                      title="Salvar no bucket GCS"
+                    >
+                      Salvar no bucket
+                    </button>
+                  </div>
                   <button 
                     class="show-history-btn" 
                     data-method="${method}"
@@ -1845,7 +2368,7 @@ class ConfigManager {
 
       // Adicionar event listeners para os novos botões (apenas se houver dados)
       if (hasData) {
-        this.attachResultEventListeners(method, path, configId, queryParams, body, response, timestamp);
+        this.attachResultEventListeners(method, path, configId, pathParams, queryParams, body, response, timestamp, sentUuid);
       }
 
       // Adicionar event listeners para os botões de copiar
@@ -1962,8 +2485,8 @@ class ConfigManager {
             <input 
               type="text" 
               id="save-name-${method}-${pathId}"
+              placeholder="Nome do conjunto"
               class="save-name-input"
-              placeholder="Nome para este conjunto..."
             />
             <button 
               class="save-set-btn" 
@@ -1971,12 +2494,32 @@ class ConfigManager {
               data-path="${path}"
               data-config-id="${configId}"
             >
-              Salvar Valores Atuais
+              Salvar Local
+            </button>
+            <button 
+              class="save-set-bucket-btn" 
+              data-method="${method}"
+              data-path="${path}"
+              data-config-id="${configId}"
+              title="Salvar no bucket GCS"
+            >
+              Salvar no bucket
             </button>
           </div>
           <div class="load-set-controls">
             <label for="saved-sets-${method}-${pathId}">Carregar conjunto:</label>
             <div class="load-set-row">
+              <select 
+                id="saved-sets-filter-${method}-${pathId}"
+                class="saved-sets-filter"
+                data-method="${method}"
+                data-path="${path}"
+                data-config-id="${configId}"
+              >
+                <option value="todos">Todos</option>
+                <option value="local">Local</option>
+                <option value="bucket">Bucket</option>
+              </select>
               <select 
                 id="saved-sets-${method}-${pathId}"
                 class="saved-sets-select"
@@ -1995,6 +2538,10 @@ class ConfigManager {
               >
                 🗑️
               </button>
+              <div id="loading-${method}-${pathId}" class="loading-indicator" style="display: none;">
+                <div class="loading-spinner"></div>
+                Carregando...
+              </div>
             </div>
           </div>
         </div>
@@ -2143,7 +2690,8 @@ class ConfigManager {
     
     // Atualizar a exibição
     const select = document.querySelector('#history-endpoint-select') as HTMLSelectElement;
-    this.displayHistoryResults(configId, select?.value || '');
+    const sourceSelect = document.querySelector('#history-source-select') as HTMLSelectElement;
+    await this.displayHistoryResults(configId, select?.value || '', '', '', sourceSelect?.value || 'todos');
     
     this.showToast('Resultado excluído com sucesso!', 'success');
   }
@@ -2159,16 +2707,16 @@ class ConfigManager {
       const savedTheme = localStorage.getItem(this.THEME_KEY);
       if (savedTheme === 'dark') {
         document.documentElement.setAttribute('data-theme', 'dark');
-        this.elements.themeToggleBtn.textContent = '🌙';
+        this.elements.themeToggleBtn.textContent = '🌙 Tema Escuro';
       } else {
         document.documentElement.removeAttribute('data-theme');
-        this.elements.themeToggleBtn.textContent = '☀️';
+        this.elements.themeToggleBtn.textContent = '☀️ Tema Claro';
       }
     } catch (error) {
       console.error('Failed to load theme:', error);
       // Tema padrão (light)
       document.documentElement.removeAttribute('data-theme');
-      this.elements.themeToggleBtn.textContent = '☀️';
+      this.elements.themeToggleBtn.textContent = '☀️ Tema Claro';
     }
   }
 
@@ -2197,11 +2745,11 @@ class ConfigManager {
     
     if (isDark) {
       document.documentElement.removeAttribute('data-theme');
-      this.elements.themeToggleBtn.textContent = '☀️';
+      this.elements.themeToggleBtn.textContent = '☀️ Tema Claro';
       localStorage.setItem(this.THEME_KEY, 'light');
     } else {
       document.documentElement.setAttribute('data-theme', 'dark');
-      this.elements.themeToggleBtn.textContent = '🌙';
+      this.elements.themeToggleBtn.textContent = '🌙 Tema Escuro';
       localStorage.setItem(this.THEME_KEY, 'dark');
     }
   }
@@ -2421,6 +2969,18 @@ class ConfigManager {
       const v = c === 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
     });
+  }
+
+  private normalizeUrlToId(url: string): string {
+    return url.trim()
+      .replace(/\/$/, '')                    // Remove trailing slash
+      .toLowerCase()                          // Normaliza case
+      .replace(/^(https?):\/\//, '$1___')     // Transforma protocolo em https___ ou http___
+      .replace(/\./g, '__')                   // Transforma . em __
+      .replace(/[^\w\-\.:_]/g, '_')           // Substitui caracteres especiais, mantendo : e _
+      .replace(/:/g, '___')                   // Transforma : em ___ (para portas)
+      .replace(/_{2,}/g, '__')                // Normaliza múltiplos underscores
+      .replace(/___+/g, '___');              // Normaliza múltiplos :___
   }
 }
 

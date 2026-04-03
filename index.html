@@ -13,21 +13,38 @@
       <div class="menu-container">
         <h1 class="app-title">OpenAPI UI</h1>
         <div class="menu-controls">
-          <select id="font-size-select" class="font-size-select" title="Tamanho da fonte">
-            <option value="0.7">Mini</option>
-            <option value="0.85">Pequeno</option>
-            <option value="1" selected>Médio</option>
-            <option value="1.15">Grande</option>
-            <option value="1.3">Gigante</option>
-          </select>
           <select id="config-select" class="config-select">
             <option value="">Selecione uma configuração</option>
           </select>
           <button id="reload-spec-btn" class="reload-spec-btn" title="Recarregar Especificação" disabled>🔄</button>
           <button id="edit-configs-btn" class="edit-configs-btn">Editar Configurações</button>
-          <button id="theme-toggle-btn" class="theme-toggle-btn" title="Alternar tema">🌙</button>
-          <button id="devtools-btn" class="devtools-btn" title="Abrir DevTools">🔧</button>
-          <button id="about-btn" class="about-btn" title="Sobre">ℹ️</button>
+          
+          <button id="devtools-btn" class="devtools-btn" title="Abrir DevTools">🐞</button>
+
+          <!-- Menu de Opções Extras -->
+          <div class="extras-menu">
+            <button id="extras-menu-btn" class="extras-menu-btn" title="Opções Extras">⚙️</button>
+            <div id="extras-dropdown" class="extras-dropdown hidden">
+              <div class="dropdown-section">
+                <label>Tamanho da Fonte:</label>
+                <select id="font-size-select" class="font-size-select" title="Tamanho da fonte">
+                  <option value="0.8">Mini</option>
+                  <option value="0.9">Pequeno</option>
+                  <option value="1" selected>Médio</option>
+                  <option value="1.1">Grande</option>
+                  <option value="1.2">Gigante</option>
+                </select>
+              </div>
+              <div class="dropdown-section">
+                <button id="theme-toggle-btn" class="theme-toggle-btn" title="Alternar tema">🌙 Tema Escuro</button>
+              </div>
+              <div class="dropdown-section">
+                <button id="about-btn" class="about-btn" title="Sobre">ℹ️ Sobre</button>
+              </div>
+            </div>
+          </div>
+          
+          
         </div>
       </div>
     </header>
@@ -58,6 +75,11 @@
               <div class="form-group">
                 <label for="config-url">URL</label>
                 <input id="config-url" type="url" placeholder="Digite a URL da API..." required />
+              </div>
+              <div class="form-group">
+                <label for="config-bucket">Nome do Bucket GCS (opcional)</label>
+                <input id="config-bucket" type="text" placeholder="nome-do-bucket" />
+                <small class="form-help">Informe um bucket do Google Cloud Storage para compartilhar resultados de teste.</small>
               </div>
               <div class="form-group checkbox-group">
                 <input id="config-auth" type="checkbox" />
