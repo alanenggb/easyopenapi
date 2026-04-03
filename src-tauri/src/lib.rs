@@ -1,8 +1,47 @@
 use tauri::Manager;
+use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+struct PostgresConfig {
+    host: String,
+    port: i32,
+    db: String,
+    schema: String,
+    user: String,
+    pw: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ValueSetRecord {
+    id: String,
+    name: String,
+    config_id: String,
+    endpoint_method: String,
+    endpoint_path: String,
+    path_params: serde_json::Value,
+    query_params: serde_json::Value,
+    body: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    user_account: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TestResultRecord {
+    id: String,
+    name: String,
+    config_id: String,
+    endpoint_method: String,
+    endpoint_path: String,
+    request_data: serde_json::Value,
+    response_data: serde_json::Value,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    user_account: String,
+}
 
 #[tauri::command]
 async fn fetch_openapi_spec(url: String, use_auth: bool, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -273,281 +312,366 @@ async fn get_gcloud_account() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn save_value_set_to_gcs_bucket(
-    app: tauri::AppHandle,
-    bucket_name: String,
+async fn get_postgres_config(secret_name: String) -> Result<PostgresConfig, String> {
+    use tokio::process::Command;
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        
+        let gcloud_candidates = vec![
+            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
+        ];
+        
+        for gcloud_path in &gcloud_candidates {
+            if !Path::new(gcloud_path).exists() {
+                continue;
+            }
+            
+            let mut cmd = Command::new(gcloud_path);
+            cmd.args(&[
+                "secrets", "versions", "access", "latest",
+                &format!("--secret={}", secret_name)
+            ]);
+            
+            #[cfg(windows)]
+            {
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            
+            let output = cmd.spawn()
+                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?
+                .wait_with_output()
+                .await
+                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
+            
+            if output.status.success() {
+                let secret_json = String::from_utf8_lossy(&output.stdout);
+                
+                match serde_json::from_str::<PostgresConfig>(&secret_json) {
+                    Ok(config) => return Ok(config),
+                    Err(e) => return Err(format!("Failed to parse PostgreSQL config: {}", e)),
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("Failed to access secret: {}", stderr));
+            }
+        }
+        
+        Err("gcloud not found".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let output = Command::new(gcloud_path)
+                .args(&[
+                    "secrets", "versions", "access", "latest",
+                    &format!("--secret={}", secret_name)
+                ])
+                .output()
+                .await;
+
+            match output {
+                Ok(result) if result.status.success() => {
+                    let secret_json = String::from_utf8_lossy(&result.stdout);
+                    
+                    match serde_json::from_str::<PostgresConfig>(&secret_json) {
+                        Ok(config) => return Ok(config),
+                        Err(e) => return Err(format!("Failed to parse PostgreSQL config: {}", e)),
+                    }
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+        
+        Err("gcloud not found or not configured".to_string())
+    }
+}
+
+async fn create_postgres_connection(config: &PostgresConfig) -> Result<PgPool, String> {
+    let connection_string = format!(
+        "postgres://{}:{}@{}:{}/{}?search_path={}",
+        config.user, config.pw, config.host, config.port, config.db, config.schema
+    );
+    
+    PgPool::connect(&connection_string)
+        .await
+        .map_err(|e| format!("Failed to connect to PostgreSQL: {}", e))
+}
+
+#[tauri::command]
+async fn create_postgres_tables(secret_name: String) -> Result<String, String> {
+    let config = get_postgres_config(secret_name).await?;
+    let pool = create_postgres_connection(&config).await?;
+    
+    // Criar tabela de value sets
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS value_sets (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            config_id VARCHAR(255) NOT NULL,
+            endpoint_method VARCHAR(10) NOT NULL,
+            endpoint_path VARCHAR(500) NOT NULL,
+            path_params JSONB,
+            query_params JSONB,
+            body TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            user_account VARCHAR(255)
+        )
+    "#)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to create value_sets table: {}", e))?;
+    
+    // Criar tabela de test results
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS test_results (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            config_id VARCHAR(255) NOT NULL,
+            endpoint_method VARCHAR(10) NOT NULL,
+            endpoint_path VARCHAR(500) NOT NULL,
+            request_data JSONB,
+            response_data JSONB,
+            timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            user_account VARCHAR(255)
+        )
+    "#)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to create test_results table: {}", e))?;
+    
+    // Criar índices para melhor performance
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_value_sets_config_endpoint ON value_sets (config_id, endpoint_method, endpoint_path)")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to create value_sets index: {}", e))?;
+    
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_test_results_config_endpoint ON test_results (config_id, endpoint_method, endpoint_path)")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to create test_results index: {}", e))?;
+    
+    Ok("PostgreSQL tables created successfully".to_string())
+}
+
+#[tauri::command]
+async fn save_value_set_to_postgres(
+    secret_name: String,
     config_id: String,
     endpoint_method: String,
     endpoint_path: String,
     value_set_data: serde_json::Value,
 ) -> Result<String, String> {
-    use tokio::process::Command;
+    // Obter conta do usuário
+    let user_account = get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string());
     
-    // Get gcloud token for authentication
-    let _token = get_gcloud_token(app).await?;
-    
-    // Create GCS object path for value sets
-    let sanitized_path = endpoint_path.replace('/', "-");
+    // Extrair dados do value set
     let set_name = value_set_data.get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("unnamed")
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-        .collect::<String>();
-    let object_path = format!("{}/{}/saved-value-sets/{}.json", 
-        config_id, 
-        format!("{}-{}", endpoint_method.to_lowercase(), sanitized_path),
-        set_name
-    );
+        .to_string();
     
-    // Prepare the JSON content
-    let json_content = serde_json::to_string_pretty(&value_set_data)
-        .map_err(|e| format!("Failed to serialize value set data: {}", e))?;
+    let new_uuid = uuid::Uuid::new_v4().to_string();
+    let set_id = value_set_data.get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&new_uuid)
+        .to_string();
     
-    // Use gcloud storage cp command to upload to GCS
-    #[cfg(target_os = "windows")]
-    {
-        use std::path::Path;
-        
-        let gcloud_candidates = vec![
-            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-        ];
-        
-        for gcloud_path in &gcloud_candidates {
-            if !Path::new(gcloud_path).exists() {
-                continue;
-            }
-            
-            let mut cmd = Command::new(gcloud_path);
-            cmd.args(&[
-                "storage", "cp", "-", 
-                &format!("gs://{}/{}", bucket_name, object_path)
-            ]);
-            
-            #[cfg(windows)]
-            {
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
-            
-            if let Some(stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let mut stdin = stdin;
-                stdin.write_all(json_content.as_bytes()).await
-                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
-                stdin.flush().await
-                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
-            }
-            
-            let output = child.wait_with_output().await
-                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
-            
-            if output.status.success() {
-                return Ok(object_path);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to upload to GCS: {}", stderr));
-            }
-        }
-        
-        Err("gcloud not found".to_string())
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let gcloud_candidates = vec![
-            "/opt/homebrew/bin/gcloud".to_string(),
-            "/usr/local/bin/gcloud".to_string(),
-            format!("{}/google-cloud-sdk/bin/gcloud", home),
-        ];
-
-        for gcloud_path in &gcloud_candidates {
-            if !std::path::Path::new(gcloud_path).exists() {
-                continue;
-            }
-
-            let mut cmd = Command::new(gcloud_path);
-            cmd.args(&[
-                "storage", "cp", "-", 
-                &format!("gs://{}/{}", bucket_name, object_path)
-            ]);
-            
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
-            
-            if let Some(stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let mut stdin = stdin;
-                stdin.write_all(json_content.as_bytes()).await
-                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
-                stdin.flush().await
-                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
-            }
-            
-            let output = child.wait_with_output().await
-                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
-            
-            if output.status.success() {
-                return Ok(object_path);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to upload to GCS: {}", stderr));
-            }
-        }
-        
-        Err("gcloud not found".to_string())
-    }
+    let default_json = serde_json::json!({});
+    let path_params = value_set_data.get("pathParams").unwrap_or(&default_json);
+    let query_params = value_set_data.get("queryParams").unwrap_or(&default_json);
+    let body = value_set_data.get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    
+    // Conectar ao PostgreSQL
+    let config = get_postgres_config(secret_name).await?;
+    let pool = create_postgres_connection(&config).await?;
+    
+    // Inserir ou atualizar value set
+    sqlx::query(r#"
+        INSERT INTO value_sets (id, name, config_id, endpoint_method, endpoint_path, path_params, query_params, body, user_account)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            path_params = EXCLUDED.path_params,
+            query_params = EXCLUDED.query_params,
+            body = EXCLUDED.body,
+            user_account = EXCLUDED.user_account
+    "#)
+    .bind(&set_id)
+    .bind(&set_name)
+    .bind(&config_id)
+    .bind(&endpoint_method)
+    .bind(&endpoint_path)
+    .bind(path_params)
+    .bind(query_params)
+    .bind(&body)
+    .bind(&user_account)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to save value set to PostgreSQL: {}", e))?;
+    
+    Ok(set_id)
 }
 
 #[tauri::command]
-async fn save_to_gcs_bucket(
-    app: tauri::AppHandle,
-    bucket_name: String,
+async fn list_postgres_value_sets(
+    secret_name: String,
+    config_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    // Conectar ao PostgreSQL
+    let config = get_postgres_config(secret_name).await?;
+    let pool = create_postgres_connection(&config).await?;
+    
+    // Buscar value sets do banco
+    let rows = sqlx::query(r#"
+        SELECT id, name, config_id, endpoint_method, endpoint_path, 
+               path_params, query_params, body, created_at, user_account
+        FROM value_sets 
+        WHERE config_id = $1
+        ORDER BY created_at DESC
+    "#)
+    .bind(&config_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to fetch value sets from PostgreSQL: {}", e))?;
+    
+    let mut results = Vec::new();
+    for row in rows {
+        let value_set = serde_json::json!({
+            "id": row.get::<String, &str>("id"),
+            "name": row.get::<String, &str>("name"),
+            "configId": row.get::<String, &str>("config_id"),
+            "endpoint": {
+                "method": row.get::<String, &str>("endpoint_method"),
+                "path": row.get::<String, &str>("endpoint_path")
+            },
+            "pathParams": row.get::<serde_json::Value, &str>("path_params"),
+            "queryParams": row.get::<serde_json::Value, &str>("query_params"),
+            "body": row.get::<String, &str>("body"),
+            "createdAt": row.get::<chrono::DateTime<chrono::Utc>, &str>("created_at").to_rfc3339(),
+            "userAccount": row.get::<String, &str>("user_account")
+        });
+        results.push(value_set);
+    }
+    
+    Ok(results)
+}
+
+#[tauri::command]
+async fn save_to_postgres(
+    secret_name: String,
     config_id: String,
     endpoint_method: String,
     endpoint_path: String,
     result_data: serde_json::Value,
 ) -> Result<String, String> {
-    use tokio::process::Command;
+    // Obter conta do usuário
+    let user_account = get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string());
     
-    // Get gcloud token for authentication
-    let _token = get_gcloud_token(app).await?;
-    
-    // Create GCS object path
-    let sanitized_path = endpoint_path.replace('/', "-");
+    // Extrair dados do resultado
     let result_name = result_data.get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("unnamed")
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
-        .collect::<String>();
-    let object_path = format!("{}/{}/saved-results/{}.json", 
-        config_id, 
-        format!("{}-{}", endpoint_method.to_lowercase(), sanitized_path),
-        result_name
-    );
+        .to_string();
     
-    // Prepare the JSON content
-    let json_content = serde_json::to_string_pretty(&result_data)
-        .map_err(|e| format!("Failed to serialize result data: {}", e))?;
+    let new_uuid = uuid::Uuid::new_v4().to_string();
+    let result_id = result_data.get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&new_uuid)
+        .to_string();
     
-    // Use gcloud storage cp command to upload to GCS
-    #[cfg(target_os = "windows")]
-    {
-        use std::path::Path;
-        
-        let gcloud_candidates = vec![
-            r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-            r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd".to_string(),
-        ];
-        
-        for gcloud_path in &gcloud_candidates {
-            if !Path::new(gcloud_path).exists() {
-                continue;
-            }
-            
-            let mut cmd = Command::new(gcloud_path);
-            cmd.args(&[
-                "storage", "cp", "-", 
-                &format!("gs://{}/{}", bucket_name, object_path)
-            ]);
-            
-            #[cfg(windows)]
-            {
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
-            
-            if let Some(stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let mut stdin = stdin;
-                stdin.write_all(json_content.as_bytes()).await
-                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
-                stdin.flush().await
-                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
-            }
-            
-            let output = child.wait_with_output().await
-                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
-            
-            if output.status.success() {
-                return Ok(object_path);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to upload to GCS: {}", stderr));
-            }
-        }
-        
-        Err("gcloud not found".to_string())
+    // Conectar ao PostgreSQL
+    let config = get_postgres_config(secret_name).await?;
+    let pool = create_postgres_connection(&config).await?;
+    
+    // Inserir ou atualizar resultado
+    sqlx::query(r#"
+        INSERT INTO test_results (id, name, config_id, endpoint_method, endpoint_path, request_data, response_data, user_account)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            request_data = EXCLUDED.request_data,
+            response_data = EXCLUDED.response_data,
+            user_account = EXCLUDED.user_account
+    "#)
+    .bind(&result_id)
+    .bind(&result_name)
+    .bind(&config_id)
+    .bind(&endpoint_method)
+    .bind(&endpoint_path)
+    .bind(result_data.get("request"))
+    .bind(result_data.get("response"))
+    .bind(&user_account)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to save test result to PostgreSQL: {}", e))?;
+    
+    Ok(result_id)
+}
+
+#[tauri::command]
+async fn list_postgres_results(
+    secret_name: String,
+    config_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    // Conectar ao PostgreSQL
+    let config = get_postgres_config(secret_name).await?;
+    let pool = create_postgres_connection(&config).await?;
+    
+    // Buscar resultados do banco
+    let rows = sqlx::query(r#"
+        SELECT id, name, config_id, endpoint_method, endpoint_path, 
+               request_data, response_data, timestamp, user_account
+        FROM test_results 
+        WHERE config_id = $1
+        ORDER BY timestamp DESC
+    "#)
+    .bind(&config_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to fetch test results from PostgreSQL: {}", e))?;
+    
+    let mut results = Vec::new();
+    for row in rows {
+        let result = serde_json::json!({
+            "id": row.get::<String, &str>("id"),
+            "name": row.get::<String, &str>("name"),
+            "endpoint": {
+                "method": row.get::<String, &str>("endpoint_method"),
+                "path": row.get::<String, &str>("endpoint_path"),
+                "configId": row.get::<String, &str>("config_id")
+            },
+            "request": row.get::<serde_json::Value, &str>("request_data"),
+            "response": row.get::<serde_json::Value, &str>("response_data"),
+            "timestamp": row.get::<chrono::DateTime<chrono::Utc>, &str>("timestamp").to_rfc3339(),
+            "userAccount": row.get::<String, &str>("user_account"),
+            "storageLocation": "bucket"
+        });
+        results.push(result);
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let gcloud_candidates = vec![
-            "/opt/homebrew/bin/gcloud".to_string(),
-            "/usr/local/bin/gcloud".to_string(),
-            format!("{}/google-cloud-sdk/bin/gcloud", home),
-        ];
-
-        for gcloud_path in &gcloud_candidates {
-            if !std::path::Path::new(gcloud_path).exists() {
-                continue;
-            }
-
-            let mut cmd = Command::new(gcloud_path);
-            cmd.args(&[
-                "storage", "cp", "-", 
-                &format!("gs://{}/{}", bucket_name, object_path)
-            ]);
-            
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            
-            let mut child = cmd.spawn()
-                .map_err(|e| format!("Failed to spawn gcloud command: {}", e))?;
-            
-            if let Some(stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                let mut stdin = stdin;
-                stdin.write_all(json_content.as_bytes()).await
-                    .map_err(|e| format!("Failed to write to gcloud stdin: {}", e))?;
-                stdin.flush().await
-                    .map_err(|e| format!("Failed to flush gcloud stdin: {}", e))?;
-            }
-            
-            let output = child.wait_with_output().await
-                .map_err(|e| format!("Failed to wait for gcloud command: {}", e))?;
-            
-            if output.status.success() {
-                return Ok(object_path);
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to upload to GCS: {}", stderr));
-            }
-        }
-        
-        Err("gcloud not found".to_string())
-    }
+    
+    Ok(results)
 }
 
 #[tauri::command]
@@ -1202,7 +1326,23 @@ pub fn run() {
             
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, get_gcloud_token, get_gcloud_account, fetch_openapi_spec, make_test_request, toggle_devtools, save_app_data, load_app_data, read_package_json, save_to_gcs_bucket, list_gcs_bucket_results, save_value_set_to_gcs_bucket, list_gcs_bucket_value_sets])
+        .invoke_handler(tauri::generate_handler![
+            greet, 
+            get_gcloud_token, 
+            get_gcloud_account, 
+            fetch_openapi_spec, 
+            make_test_request, 
+            toggle_devtools, 
+            save_app_data, 
+            load_app_data, 
+            read_package_json,
+            create_postgres_tables,
+            get_postgres_config,
+            save_to_postgres, 
+            list_postgres_results, 
+            save_value_set_to_postgres, 
+            list_postgres_value_sets
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
