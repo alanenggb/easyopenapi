@@ -234,7 +234,77 @@ async fn fetch_postgres_config_from_gcp(secret_name: &str) -> Result<PostgresCon
             }
         }
     }
-    
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::env;
+
+        let home = env::var("HOME").unwrap_or_default();
+        let full_path = format!(
+            "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/google-cloud-sdk/bin:{}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            home
+        );
+
+        let gcloud_candidates = vec![
+            "/opt/homebrew/bin/gcloud".to_string(),
+            "/usr/local/bin/gcloud".to_string(),
+            format!("{}/google-cloud-sdk/bin/gcloud", home),
+        ];
+
+        let mut diagnostics: Vec<String> = Vec::new();
+
+        for gcloud_path in &gcloud_candidates {
+            if !std::path::Path::new(gcloud_path).exists() {
+                continue;
+            }
+
+            let sh_cmd = format!(
+                "PATH=\"{}\" \"{}\" secrets versions access latest --secret={}",
+                full_path, gcloud_path, secret_name
+            );
+
+            let result = Command::new("/bin/sh")
+                .args(&["-c", &sh_cmd])
+                .output()
+                .await;
+
+            match result {
+                Ok(output) if output.status.success() => {
+                    let secret_json = String::from_utf8_lossy(&output.stdout);
+                    return serde_json::from_str::<PostgresConfig>(&secret_json)
+                        .map_err(|e| format!("Failed to parse PostgreSQL config: {}", e));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    if stderr.contains("NOT_FOUND") || stderr.contains("Secret") {
+                        return Err(format!("Secret '{}' not found or access denied", secret_name));
+                    }
+                    diagnostics.push(format!(
+                        "[{}] exit={} stderr='{}'",
+                        gcloud_path,
+                        output.status.code().unwrap_or(-1),
+                        stderr
+                    ));
+                }
+                Err(e) => {
+                    diagnostics.push(format!("[{}] spawn error: {}", gcloud_path, e));
+                }
+            }
+        }
+
+        if diagnostics.is_empty() {
+            return Err(format!(
+                "gcloud not found. Checked: {}. Ensure Google Cloud SDK is installed.",
+                gcloud_candidates.join(", ")
+            ));
+        } else {
+            return Err(format!(
+                "gcloud found but failed. Diagnostics: {}",
+                diagnostics.join(" | ")
+            ));
+        }
+    }
+
     Err("gcloud not found or not configured".to_string())
 }
 

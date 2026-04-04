@@ -1511,7 +1511,7 @@ class ConfigManager {
     }
 
     // Diálogo de confirmação
-    const confirmed = confirm(`Tem certeza que deseja excluir o conjunto "${savedSet.name}"? Esta ação não pode ser desfeita.`);
+    const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir o conjunto "${savedSet.name}"? Esta ação não pode ser desfeita.`);
     
     if (!confirmed) {
       return;
@@ -2302,7 +2302,7 @@ class ConfigManager {
           <div class="history-content-inner">
             <div class="history-request">
               <h5>Request:</h5>
-              ${Object.keys(result.request.pathParams).length > 0 ? `
+              ${result.request.pathParams && Object.keys(result.request.pathParams).length > 0 ? `
                 <div class="history-section">
                   <div class="section-header">
                     <p><strong>Path Params:</strong></p>
@@ -2311,7 +2311,7 @@ class ConfigManager {
                   <pre id="history-path-${result.id}">${this.escapeHtml(JSON.stringify(result.request.pathParams, null, 2))}</pre>
                 </div>
               ` : ''}
-              ${Object.keys(result.request.queryParams).length > 0 ? `
+              ${result.request.queryParams && Object.keys(result.request.queryParams).length > 0 ? `
                 <div class="history-section">
                   <div class="section-header">
                     <p><strong>Query Params:</strong></p>
@@ -2814,6 +2814,70 @@ class ConfigManager {
     }
   }
 
+  private showConfirmDialog(message: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99999;display:flex;align-items:center;justify-content:center;';
+
+      const dialog = document.createElement('div');
+      dialog.style.cssText = [
+        'border-radius:8px',
+        'padding:24px',
+        'max-width:400px',
+        'width:90%',
+        'box-shadow:0 4px 24px rgba(0,0,0,0.4)',
+        'font-family:inherit',
+        isDark ? 'background:#212529;color:#e9ecef;border:1px solid #495057;' : 'background:#ffffff;color:#333;border:1px solid #dee2e6;'
+      ].join(';');
+
+      const msg = document.createElement('p');
+      msg.textContent = message;
+      msg.style.cssText = 'margin:0 0 20px;font-size:14px;line-height:1.5;';
+
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancelar';
+      cancelBtn.style.cssText = [
+        'padding:8px 16px',
+        'border-radius:4px',
+        'cursor:pointer',
+        'font-size:13px',
+        isDark ? 'border:1px solid #495057;background:#343a40;color:#e9ecef;' : 'border:1px solid #dee2e6;background:#f8f9fa;color:#333;'
+      ].join(';');
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.textContent = 'Excluir';
+      confirmBtn.style.cssText = [
+        'padding:8px 16px',
+        'border-radius:4px',
+        'border:none',
+        'cursor:pointer',
+        'font-size:13px',
+        'font-weight:600',
+        isDark ? 'background:#c23c3c;color:#fff;' : 'background:#dc3545;color:#fff;'
+      ].join(';');
+
+      const close = (result: boolean) => {
+        document.body.removeChild(overlay);
+        resolve(result);
+      };
+
+      cancelBtn.addEventListener('click', () => close(false));
+      confirmBtn.addEventListener('click', () => close(true));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+
+      actions.append(cancelBtn, confirmBtn);
+      dialog.append(msg, actions);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+      confirmBtn.focus();
+    });
+  }
+
   private showToast(message: string, type: 'success' | 'error' = 'success') {
     // Criar elemento do toast
     const toast = document.createElement('div');
@@ -2859,7 +2923,8 @@ class ConfigManager {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         e.preventDefault();
-        const target = e.target as HTMLElement;
+        const target = (e.target as HTMLElement).closest('.delete-result-btn') as HTMLElement;
+        if (!target) return;
         const resultId = target.dataset.resultId;
         const btnConfigId = target.dataset.configId;
         const storageLocation = target.dataset.storageLocation;
@@ -2873,7 +2938,8 @@ class ConfigManager {
   }
 
   private async deleteSavedResult(resultId: string, configId: string, storageLocation?: string, userAccount?: string) {
-    if (!confirm('Tem certeza que deseja excluir este resultado salvo?')) {
+    const confirmed = await this.showConfirmDialog('Tem certeza que deseja excluir este resultado salvo?');
+    if (!confirmed) {
       return;
     }
 
