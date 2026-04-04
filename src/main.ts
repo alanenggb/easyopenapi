@@ -902,6 +902,17 @@ class ConfigManager {
     }
 
     await this.saveConfigs();
+    
+    // Se a configuração atualizada for a que está selecionada, resetar a seleção
+    const currentConfigId = this.getCurrentConfigId();
+    const updatedConfigId = this.editingId;
+    
+    if (currentConfigId === updatedConfigId) {
+      // Resetar para o valor padrão e atualizar a interface
+      this.elements.configSelect.value = '';
+      this.handleConfigSelection(''); // Chamar diretamente para atualizar a interface
+    }
+    
     this.updateConfigSelect();
     this.renderConfigs();
     this.resetForm();
@@ -1946,18 +1957,7 @@ class ConfigManager {
         
         // Re-adicionar listeners para os novos botões
         this.attachCopyButtonsListeners();
-        modal.querySelectorAll('.delete-result-btn').forEach((btn) => {
-          btn.addEventListener('click', async e => {
-            e.stopPropagation();
-            const target = e.target as HTMLElement;
-            const resultId = target.dataset.resultId;
-            const btnConfigId = target.dataset.configId;
-            
-            if (resultId && btnConfigId) {
-              await this.deleteSavedResult(resultId, btnConfigId);
-            }
-          });
-        });
+        this.attachDeleteButtonListeners(modal);
       };
 
       // Event listeners para busca e usuário
@@ -1986,18 +1986,7 @@ class ConfigManager {
     this.attachCopyButtonsListeners();
     
     // Adicionar event listeners para os botões de exclusão
-    modal.querySelectorAll('.delete-result-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const target = e.target as HTMLElement;
-        const resultId = target.dataset.resultId;
-        const btnConfigId = target.dataset.configId;
-        
-        if (resultId && btnConfigId) {
-          await this.deleteSavedResult(resultId, btnConfigId);
-        }
-      });
-    });
+    this.attachDeleteButtonListeners(modal);
 
     // Adicionar event listeners para busca individual em cada resultado
     this.setupHistoryResponseSearchListeners(configId);
@@ -2098,6 +2087,15 @@ class ConfigManager {
   private async displayHistoryResults(configId: string, endpointFilter: string, searchFilter: string = '', userFilter: string = '', sourceFilter: string = 'todos') {
     const listContainer = document.querySelector('.history-list') as HTMLElement;
     if (!listContainer) return;
+
+    // Garantir que o usuário atual esteja carregado
+    if (!this.cachedGcloudUser) {
+      try {
+        await this.loadGcloudUser();
+      } catch (error) {
+        console.warn('Could not load gcloud user:', error);
+      }
+    }
 
     // Mostrar indicador de carregamento
     listContainer.innerHTML = `
@@ -2266,7 +2264,7 @@ class ConfigManager {
               <span class="history-timestamp">${new Date(result.timestamp).toLocaleString('pt-BR')}</span>
               ${result.storageLocation === 'database' ? `
                 <span class="history-storage-indicator database" title="Salvo no banco de dados">
-                  🗂️ Banco de Dados
+                  ▤ Banco de Dados
                 </span>
                 ${result.userAccount ? `
                   <span class="history-user" title="Salvo por: ${result.userAccount}">
@@ -2281,19 +2279,20 @@ class ConfigManager {
             </div>
           </div>
           <div class="history-actions">
-            ${result.storageLocation === 'local' ? `
+            ${result.storageLocation === 'local' || (result.storageLocation === 'database' && (result.userAccount === 'unknown' || result.userAccount === this.cachedGcloudUser)) ? `
               <button 
                 class="delete-result-btn" 
                 data-result-id="${result.id}"
                 data-config-id="${configId}"
+                data-storage-location="${result.storageLocation}"
+                data-user-account="${result.userAccount || ''}"
                 title="Excluir resultado"
-                onclick="event.stopPropagation()"
               >
                 🗑️
               </button>
             ` : `
-              <span class="database-result-info" title="Resultados do banco de dados não podem ser excluídos localmente">
-                🗂️
+              <span class="database-result-info" title="Resultados do banco de dados só podem ser excluídos pelo criador">
+                ▤
               </span>
             `}
             <span class="history-expand-icon">▶</span>
@@ -2854,28 +2853,84 @@ class ConfigManager {
     });
   }
 
-  private async deleteSavedResult(resultId: string, configId: string) {
+  private attachDeleteButtonListeners(modal: HTMLElement) {
+    // Event listeners para botões de exclusão
+    modal.querySelectorAll('.delete-result-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const target = e.target as HTMLElement;
+        const resultId = target.dataset.resultId;
+        const btnConfigId = target.dataset.configId;
+        const storageLocation = target.dataset.storageLocation;
+        const userAccount = target.dataset.userAccount;
+        
+        if (resultId && btnConfigId) {
+          await this.deleteSavedResult(resultId, btnConfigId, storageLocation, userAccount);
+        }
+      });
+    });
+  }
+
+  private async deleteSavedResult(resultId: string, configId: string, storageLocation?: string, userAccount?: string) {
     if (!confirm('Tem certeza que deseja excluir este resultado salvo?')) {
       return;
     }
 
-    const results = this.savedResults[configId] || [];
-    const updatedResults = results.filter(result => result.id !== resultId);
-    
-    if (updatedResults.length === 0) {
-      delete this.savedResults[configId];
+    // Se for resultado do banco de dados, usar a função do backend
+    if (storageLocation === 'database') {
+      try {
+        const config = this.configs.find(c => c.id === configId);
+        const secretName = config?.databaseName || config?.gcpSecretName;
+        if (!secretName) {
+          this.showToast('Erro: configuração não encontrada ou sem nome do banco de dados', 'error');
+          return;
+        }
+
+        const success = await invoke<boolean>('delete_test_result_from_postgres', {
+          secretName,
+          configId,
+          resultId,
+          userAccount: userAccount || 'unknown'
+        });
+
+        if (success) {
+          this.showToast('Resultado do banco de dados excluído com sucesso!', 'success');
+        } else {
+          this.showToast('Erro ao excluir resultado do banco de dados', 'error');
+          return;
+        }
+      } catch (error) {
+        console.error('Error deleting database result:', error);
+        this.showToast('Erro ao excluir resultado do banco de dados', 'error');
+        return;
+      }
     } else {
-      this.savedResults[configId] = updatedResults;
+      // Exclusão local (comportamento original)
+      const results = this.savedResults[configId] || [];
+      const updatedResults = results.filter(result => result.id !== resultId);
+      
+      if (updatedResults.length === 0) {
+        delete this.savedResults[configId];
+      } else {
+        this.savedResults[configId] = updatedResults;
+      }
+      
+      this.saveSavedResults();
+      this.showToast('Resultado local excluído com sucesso!', 'success');
     }
-    
-    this.saveSavedResults();
     
     // Atualizar a exibição
     const select = document.querySelector('#history-endpoint-select') as HTMLSelectElement;
     const sourceSelect = document.querySelector('#history-source-select') as HTMLSelectElement;
     await this.displayHistoryResults(configId, select?.value || '', '', '', sourceSelect?.value || 'todos');
     
-    this.showToast('Resultado excluído com sucesso!', 'success');
+    // Re-adicionar listeners após a atualização
+    const modal = document.querySelector('.history-modal') as HTMLElement;
+    if (modal) {
+      this.attachCopyButtonsListeners();
+      this.attachDeleteButtonListeners(modal);
+    }
   }
 
   private escapeHtml(text: string): string {
