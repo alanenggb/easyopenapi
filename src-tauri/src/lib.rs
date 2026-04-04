@@ -304,8 +304,6 @@ async fn fetch_postgres_config_from_gcp(secret_name: &str) -> Result<PostgresCon
             ));
         }
     }
-
-    Err("gcloud not found or not configured".to_string())
 }
 
 #[tauri::command]
