@@ -1,8 +1,8 @@
 [package]
 name = "openapiui"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.8"
+description = "OpenAPIUI"
+authors = ["alanenggb"]
 license = "MIT"
 edition = "2021"
 

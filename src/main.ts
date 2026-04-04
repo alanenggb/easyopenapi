@@ -75,7 +75,7 @@ class ConfigManager {
   private readonly THEME_KEY = 'openapiui-theme';
   private readonly FONT_SIZE_KEY = 'openapiui-font-size';
   private defaultBodyValues = new Map<string, string>();
-  private readonly APP_VERSION = '0.1.0'; // Versão atual do aplicativo
+  private readonly APP_VERSION = '0.1.8'; // Versão atual do aplicativo
   private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
   private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
 
@@ -808,19 +808,29 @@ class ConfigManager {
 
   private async loadAppVersion() {
     try {
-      // Tentar carregar do package.json via Tauri (se disponível)
-      const packageJson = await invoke<string>('read_package_json');
-      const packageData = JSON.parse(packageJson);
+      // Tentar obter versão compilada do Tauri (funciona em dev e produção)
+      const version = await invoke<string>('get_app_version');
       const versionElement = document.getElementById('app-version');
       if (versionElement) {
-        versionElement.textContent = packageData.version || this.APP_VERSION;
+        versionElement.textContent = version;
       }
     } catch (error) {
-      console.error('Failed to load app version from package.json, using fallback:', error);
-      // Usar versão embutida como fallback
-      const versionElement = document.getElementById('app-version');
-      if (versionElement) {
-        versionElement.textContent = this.APP_VERSION;
+      console.warn('Failed to get app version from Tauri metadata, trying package.json:', error);
+      try {
+        // Fallback: tentar carregar do package.json (apenas em dev)
+        const packageJson = await invoke<string>('read_package_json');
+        const packageData = JSON.parse(packageJson);
+        const versionElement = document.getElementById('app-version');
+        if (versionElement) {
+          versionElement.textContent = packageData.version || this.APP_VERSION;
+        }
+      } catch (fallbackError) {
+        console.error('Failed to load app version from package.json, using fallback:', fallbackError);
+        // Fallback final: usar versão embutida
+        const versionElement = document.getElementById('app-version');
+        if (versionElement) {
+          versionElement.textContent = this.APP_VERSION;
+        }
       }
     }
   }

@@ -233,6 +233,11 @@ async fn fetch_postgres_config_from_gcp(secret_name: &str) -> Result<PostgresCon
                 continue;
             }
         }
+        
+        return Err(format!(
+            "gcloud not found. Checked: {}. Ensure Google Cloud SDK is installed.",
+            gcloud_candidates.join(", ")
+        ));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1085,6 +1090,14 @@ async fn read_package_json() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn get_app_version() -> Result<String, String> {
+    // Usa a versão do Cargo.toml que é compilada no binário
+    // Isso funciona tanto em dev quanto em produção
+    let version = env!("CARGO_PKG_VERSION");
+    Ok(version.to_string())
+}
+
+#[tauri::command]
 async fn delete_value_set_from_postgres(secret_name: String, config_id: String, method: String, path: String, value_set_id: String, user_account: String, connection_cache: tauri::State<'_, PostgresConnectionCache>, config_cache: tauri::State<'_, PostgresConfigCache>) -> Result<bool, String> {
     let config = get_postgres_config(secret_name, config_cache).await?;
     let pool = connection_cache.get_connection(&config).await?;
@@ -1249,6 +1262,7 @@ pub fn run() {
             save_app_data, 
             load_app_data, 
             read_package_json,
+            get_app_version,
             create_postgres_tables,
             get_postgres_config,
             clear_postgres_config_cache,

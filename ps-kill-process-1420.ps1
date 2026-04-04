@@ -1,0 +1,1 @@
+(Get-NetTCPConnection -LocalPort 1420).OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }
