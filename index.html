@@ -73,8 +73,9 @@
                 <input id="config-name" type="text" placeholder="Digite o nome..." required />
               </div>
               <div class="form-group">
-                <label for="config-url">URL</label>
-                <input id="config-url" type="url" placeholder="Digite a URL da API..." required />
+                <label for="config-url">URL (opcional para configurações customizadas)</label>
+                <input id="config-url" type="url" placeholder="Digite a URL da API..." />
+                <small class="form-help">Deixe em branco para criar uma configuração customizada onde você pode adicionar endpoints manualmente.</small>
               </div>
               <div class="form-group">
                 <label for="config-secret">Nome do Secret GCP (opcional)</label>
@@ -135,8 +136,8 @@
               <p><strong>Open Source:</strong> Este projeto é open source e disponível gratuitamente.</p>
               <p><strong>Criador:</strong> Alan Ribeiro (@alanenggb)</p>
               <p><strong>Repositório:</strong> 
-                <a href="https://github.com/alanenggb/openapiui" target="_blank" rel="noopener noreferrer">
-                  https://github.com/alanenggb/openapiui
+                <a href="https://github.com/alanenggb/easyopenapi" target="_blank" rel="noopener noreferrer">
+                  https://github.com/alanenggb/easyopenapi
                 </a>
               </p>
             </div>
@@ -151,6 +152,79 @@
               <p>Verifique o repositório para mais informações.</p>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal de Custom Endpoint -->
+    <div id="custom-endpoint-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="custom-endpoint-modal-title">Adicionar Endpoint Customizado</h2>
+          <button id="close-custom-endpoint-modal" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+          <form id="custom-endpoint-form" class="custom-endpoint-form">
+            <input type="hidden" id="custom-endpoint-id" />
+            <input type="hidden" id="custom-endpoint-config-id" />
+            
+            <div class="form-group">
+              <label for="custom-endpoint-name">Nome do Endpoint *</label>
+              <input id="custom-endpoint-name" type="text" placeholder="Digite o nome..." required />
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-description">Descrição</label>
+              <input id="custom-endpoint-description" type="text" placeholder="Descrição do endpoint..." />
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-base-url">Base URL *</label>
+              <input id="custom-endpoint-base-url" type="url" placeholder="https://api.example.com" required />
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-path">Endpoint Path *</label>
+              <input id="custom-endpoint-path" type="text" placeholder="/users/{userId}" required />
+              <small class="form-help">Use {paramName} para parâmetros de path.</small>
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-method">Método HTTP *</label>
+              <select id="custom-endpoint-method" required>
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label>Query Parameters</label>
+              <div id="custom-endpoint-query-params" class="query-params-container">
+                <!-- Query params serão adicionados dinamicamente -->
+              </div>
+              <button type="button" id="add-query-param-btn" class="add-query-param-btn">+ Adicionar Query Parameter</button>
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-example-body">Example JSON Body</label>
+              <textarea id="custom-endpoint-example-body" class="json-textarea" placeholder='{"key": "value"}' rows="4"></textarea>
+            </div>
+            
+            <div class="form-group">
+              <label for="custom-endpoint-example-result">Example Result</label>
+              <textarea id="custom-endpoint-example-result" class="json-textarea" placeholder='{"result": "success"}' rows="4"></textarea>
+              <small class="form-help">Resposta de exemplo para documentação.</small>
+            </div>
+            
+            <div class="form-actions">
+              <button type="submit" id="save-custom-endpoint-btn">Salvar Endpoint</button>
+              <button type="button" id="cancel-custom-endpoint-btn">Cancelar</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

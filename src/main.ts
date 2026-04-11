@@ -4,11 +4,33 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 interface Configuration {
   id: string;
   name: string;
-  url: string;
+  url?: string; // Made optional for custom configurations
   useDefaultAuth: boolean;
   headers: Array<{ name: string; value: string }>;
   databaseName?: string;
   gcpSecretName?: string; // Para compatibilidade com configurações salvas antigas
+  created_by?: string; // Track creator for deletion permissions
+}
+
+interface CustomEndpoint {
+  id: string;
+  config_id: string;
+  name: string;
+  description?: string;
+  base_url: string;
+  endpoint_path: string;
+  method: string;
+  query_params: QueryParam[];
+  example_body?: string;
+  example_result?: string;
+  created_by: string;
+}
+
+interface QueryParam {
+  name: string;
+  type: string;
+  required: boolean;
+  default?: string;
 }
 
 interface TestResponse {
@@ -68,9 +90,11 @@ class ConfigManager {
   private configs: Configuration[] = [];
   private editingId: string | null = null;
   private savedValueSets: EndpointSavedSets = {};
+  private customSavedValueSets: { [configId: string]: { [endpointId: string]: SavedValueSet[] } } = {};
   private savedResults: SavedResults = {};
   private readonly STORAGE_KEY = 'openapiui-configurations';
   private readonly SAVED_SETS_KEY = 'openapiui-saved-sets';
+  private readonly CUSTOM_SAVED_SETS_KEY = 'openapiui-custom-saved-sets';
   private readonly SAVED_RESULTS_KEY = 'openapiui-saved-results';
   private readonly THEME_KEY = 'openapiui-theme';
   private readonly FONT_SIZE_KEY = 'openapiui-font-size';
@@ -105,12 +129,30 @@ class ConfigManager {
     aboutModal: document.querySelector("#about-modal") as HTMLDivElement,
     closeAboutModalBtn: document.querySelector("#close-about-modal") as HTMLButtonElement,
     welcomeScreen: document.querySelector("#welcome-screen") as HTMLDivElement,
+    customEndpointModal: document.querySelector("#custom-endpoint-modal") as HTMLDivElement,
+    closeCustomEndpointModalBtn: document.querySelector("#close-custom-endpoint-modal") as HTMLButtonElement,
+    customEndpointForm: document.querySelector("#custom-endpoint-form") as HTMLFormElement,
+    customEndpointName: document.querySelector("#custom-endpoint-name") as HTMLInputElement,
+    customEndpointDescription: document.querySelector("#custom-endpoint-description") as HTMLInputElement,
+    customEndpointBaseUrl: document.querySelector("#custom-endpoint-base-url") as HTMLInputElement,
+    customEndpointPath: document.querySelector("#custom-endpoint-path") as HTMLInputElement,
+    customEndpointMethod: document.querySelector("#custom-endpoint-method") as HTMLSelectElement,
+    customEndpointQueryParams: document.querySelector("#custom-endpoint-query-params") as HTMLDivElement,
+    addQueryParamBtn: document.querySelector("#add-query-param-btn") as HTMLButtonElement,
+    customEndpointExampleBody: document.querySelector("#custom-endpoint-example-body") as HTMLTextAreaElement,
+    customEndpointExampleResult: document.querySelector("#custom-endpoint-example-result") as HTMLTextAreaElement,
+    saveCustomEndpointBtn: document.querySelector("#save-custom-endpoint-btn") as HTMLButtonElement,
+    cancelCustomEndpointBtn: document.querySelector("#cancel-custom-endpoint-btn") as HTMLButtonElement,
+    customEndpointId: document.querySelector("#custom-endpoint-id") as HTMLInputElement,
+    customEndpointConfigId: document.querySelector("#custom-endpoint-config-id") as HTMLInputElement,
+    customEndpointModalTitle: document.querySelector("#custom-endpoint-modal-title") as HTMLHeadingElement,
   };
 
   async init() {
     await Promise.all([
       this.loadConfigs(),
       this.loadSavedValueSets(),
+      this.loadCustomSavedValueSets(),
       this.loadSavedResults(),
       this.loadTheme(),
       this.loadFontSize(),
@@ -119,12 +161,23 @@ class ConfigManager {
     this.setupEventListeners();
     this.updateConfigSelect();
     this.renderConfigs();
-    
+
     // Atualizar título da janela ao iniciar
     await this.updateWindowTitle();
   }
 
   private setupEventListeners() {
+    // Event delegation for global-history-btn (works for both regular and custom configs)
+    document.body.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.classList.contains('global-history-btn')) {
+        const configId = target.dataset.configId;
+        if (configId) {
+          this.showHistoryModal(configId);
+        }
+      }
+    });
+
     // Form de configuração
     this.elements.configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -179,6 +232,30 @@ class ConfigManager {
 
     this.elements.closeModalBtn.addEventListener("click", () => {
       this.hideModal();
+    });
+
+    // Custom endpoint modal event listeners
+    this.elements.closeCustomEndpointModalBtn.addEventListener("click", () => {
+      this.hideCustomEndpointModal();
+    });
+
+    this.elements.customEndpointModal.addEventListener("click", (e) => {
+      if (e.target === this.elements.customEndpointModal) {
+        this.hideCustomEndpointModal();
+      }
+    });
+
+    this.elements.cancelCustomEndpointBtn.addEventListener("click", () => {
+      this.hideCustomEndpointModal();
+    });
+
+    this.elements.customEndpointForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await this.handleCustomEndpointSubmit();
+    });
+
+    this.elements.addQueryParamBtn.addEventListener("click", () => {
+      this.addQueryParamField();
     });
 
     // Select de configurações
@@ -367,6 +444,53 @@ class ConfigManager {
     }
   }
 
+  private async loadCustomSavedValueSets() {
+    try {
+      // Tentar carregar do app_data_dir primeiro
+      try {
+        const stored = await invoke<any>('load_app_data', { key: this.CUSTOM_SAVED_SETS_KEY });
+        if (stored) {
+          this.customSavedValueSets = stored;
+        } else {
+          this.customSavedValueSets = {};
+        }
+      } catch (appDataError) {
+        console.warn('Failed to load custom saved sets from app_data_dir, falling back to localStorage:', appDataError);
+        
+        // Fallback para localStorage
+        const stored = localStorage.getItem(this.CUSTOM_SAVED_SETS_KEY);
+        if (stored) {
+          this.customSavedValueSets = JSON.parse(stored);
+          // Migrar para app_data_dir
+          await this.saveCustomSavedValueSets();
+        } else {
+          this.customSavedValueSets = {};
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load custom saved value sets:', error);
+      this.customSavedValueSets = {};
+    }
+  }
+
+  private async saveCustomSavedValueSets() {
+    try {
+      await invoke('save_app_data', { 
+        key: this.CUSTOM_SAVED_SETS_KEY, 
+        value: this.customSavedValueSets 
+      });
+    } catch (error) {
+      console.error('Failed to save custom saved value sets to app_data_dir:', error);
+      
+      // Fallback para localStorage
+      try {
+        localStorage.setItem(this.CUSTOM_SAVED_SETS_KEY, JSON.stringify(this.customSavedValueSets, null, 2));
+      } catch (localStorageError) {
+        console.error('Failed to save to localStorage fallback:', localStorageError);
+      }
+    }
+  }
+
   private async loadSavedResults() {
     try {
       // Tentar carregar do app_data_dir primeiro
@@ -495,7 +619,7 @@ class ConfigManager {
           <div class="config-header">
             <div class="config-info">
               <h3>${this.escapeHtml(config.name)}</h3>
-              <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
+              <p><strong>URL:</strong> ${config.url ? this.escapeHtml(config.url) : 'Configuração Customizada (sem URL)'}</p>
               <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
               ${config.databaseName ? `
                 <div><strong>Secret do BD:</strong> <span>${this.escapeHtml(config.databaseName)}</span> ${databaseStatusMessage}</div>
@@ -516,8 +640,28 @@ class ConfigManager {
         </div>
       `;
 
-      // Carregar o OpenAPI JSON
-      await this.loadOpenApiSpec(config);
+      // Se for configuração customizada sem URL, carregar endpoints customizados
+      if (!config.url) {
+        await this.loadCustomEndpoints(config);
+      } else {
+        // Carregar o OpenAPI JSON
+        await this.loadOpenApiSpec(config);
+      }
+    }
+  }
+
+  private async loadCustomEndpoints(config: Configuration) {
+    try {
+      const endpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+      await this.displayCustomEndpoints(config, endpoints);
+    } catch (error) {
+      console.error('Failed to load custom endpoints:', error);
+      const openApiContent = document.getElementById('openapi-content') as HTMLDivElement;
+      openApiContent.innerHTML = `
+        <div class="error-state">
+          <p>Erro ao carregar endpoints customizados: ${this.escapeHtml(String(error))}</p>
+        </div>
+      `;
     }
   }
 
@@ -526,7 +670,6 @@ class ConfigManager {
     
     try {
       const fullUrl = `${config.url}/openapi.json`;
-      console.log('Fetching OpenAPI spec from:', fullUrl);
 
       // Tentar usar o proxy Tauri primeiro (evita CORS)
       let openApiSpec: any;
@@ -536,7 +679,6 @@ class ConfigManager {
           url: fullUrl,
           useAuth: config.useDefaultAuth
         });
-        console.log('Successfully fetched via Tauri proxy');
       } catch (tauriError) {
         console.warn('Tauri proxy failed, falling back to fetch:', tauriError);
         
@@ -576,16 +718,11 @@ class ConfigManager {
           throw new Error(`URL inválida: ${fullUrl}. Erro: ${String(urlError)}`);
         }
 
-        console.log('Headers:', headers);
-
         const response = await fetch(fullUrl, {
           method: 'GET',
           headers: headers,
           mode: 'cors',
         });
-
-        console.log('Response status:', response.status);
-        console.log('Response headers:', response.headers);
 
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -840,6 +977,799 @@ class ConfigManager {
     document.body.style.overflow = '';
   }
 
+  private hideCustomEndpointModal() {
+    this.elements.customEndpointModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    this.clearCustomEndpointForm();
+  }
+
+  private showCustomEndpointModal(configId: string, editingEndpoint?: CustomEndpoint) {
+    this.elements.customEndpointConfigId.value = configId;
+    
+    if (editingEndpoint) {
+      this.elements.customEndpointModalTitle.textContent = 'Editar Endpoint Customizado';
+      this.elements.customEndpointId.value = editingEndpoint.id;
+      this.elements.customEndpointName.value = editingEndpoint.name;
+      this.elements.customEndpointDescription.value = editingEndpoint.description || '';
+      this.elements.customEndpointBaseUrl.value = editingEndpoint.base_url;
+      this.elements.customEndpointPath.value = editingEndpoint.endpoint_path;
+      this.elements.customEndpointMethod.value = editingEndpoint.method;
+      this.elements.customEndpointExampleBody.value = editingEndpoint.example_body || '';
+      this.elements.customEndpointExampleResult.value = editingEndpoint.example_result || '';
+      
+      // Load query params
+      this.elements.customEndpointQueryParams.innerHTML = '';
+      editingEndpoint.query_params.forEach(param => {
+        this.addQueryParamField(param.name, param.type, param.required, param.default);
+      });
+    } else {
+      this.elements.customEndpointModalTitle.textContent = 'Adicionar Endpoint Customizado';
+      this.elements.customEndpointId.value = '';
+      this.elements.customEndpointName.value = '';
+      this.elements.customEndpointDescription.value = '';
+      this.elements.customEndpointBaseUrl.value = '';
+      this.elements.customEndpointPath.value = '';
+      this.elements.customEndpointMethod.value = 'GET';
+      this.elements.customEndpointExampleBody.value = '';
+      this.elements.customEndpointExampleResult.value = '';
+      this.elements.customEndpointQueryParams.innerHTML = '';
+    }
+    
+    this.elements.customEndpointModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  private clearCustomEndpointForm() {
+    this.elements.customEndpointForm.reset();
+    this.elements.customEndpointId.value = '';
+    this.elements.customEndpointConfigId.value = '';
+    this.elements.customEndpointQueryParams.innerHTML = '';
+  }
+
+  private addQueryParamField(name: string = '', type: string = 'string', required: boolean = false, defaultValue: string = '') {
+    const paramDiv = document.createElement('div');
+    paramDiv.className = 'query-param-item';
+    paramDiv.innerHTML = `
+      <input type="text" placeholder="Nome" class="param-name" value="${this.escapeHtml(name)}" required />
+      <select class="param-type">
+        <option value="string" ${type === 'string' ? 'selected' : ''}>String</option>
+        <option value="number" ${type === 'number' ? 'selected' : ''}>Number</option>
+        <option value="boolean" ${type === 'boolean' ? 'selected' : ''}>Boolean</option>
+      </select>
+      <label class="param-required">
+        <input type="checkbox" class="param-required-check" ${required ? 'checked' : ''} />
+        Required
+      </label>
+      <input type="text" placeholder="Default" class="param-default" value="${this.escapeHtml(defaultValue)}" />
+      <button type="button" class="remove-param-btn">&times;</button>
+    `;
+    
+    paramDiv.querySelector('.remove-param-btn')?.addEventListener('click', () => {
+      paramDiv.remove();
+    });
+    
+    this.elements.customEndpointQueryParams.appendChild(paramDiv);
+  }
+
+  private async handleCustomEndpointSubmit() {
+    const configId = this.elements.customEndpointConfigId.value;
+    const endpointId = this.elements.customEndpointId.value;
+    const name = this.elements.customEndpointName.value.trim();
+    const description = this.elements.customEndpointDescription.value.trim();
+    const baseUrl = this.elements.customEndpointBaseUrl.value.trim();
+    const endpointPath = this.elements.customEndpointPath.value.trim();
+    const method = this.elements.customEndpointMethod.value;
+    const exampleBody = this.elements.customEndpointExampleBody.value.trim();
+    const exampleResult = this.elements.customEndpointExampleResult.value.trim();
+
+    if (!name || !baseUrl || !endpointPath) {
+      this.showToast('Por favor, preencha os campos obrigatórios.', 'error');
+      return;
+    }
+
+    // Collect query params
+    const queryParams: QueryParam[] = [];
+    const paramItems = this.elements.customEndpointQueryParams.querySelectorAll('.query-param-item');
+    paramItems.forEach(item => {
+      const paramName = (item.querySelector('.param-name') as HTMLInputElement).value.trim();
+      const paramType = (item.querySelector('.param-type') as HTMLSelectElement).value;
+      const paramRequired = (item.querySelector('.param-required-check') as HTMLInputElement).checked;
+      const paramDefault = (item.querySelector('.param-default') as HTMLInputElement).value.trim();
+      
+      if (paramName) {
+        queryParams.push({
+          name: paramName,
+          type: paramType,
+          required: paramRequired,
+          default: paramDefault || undefined
+        });
+      }
+    });
+
+    const endpointData = {
+      id: endpointId || undefined,
+      config_id: configId,
+      name,
+      description: description || undefined,
+      base_url: baseUrl,
+      endpoint_path: endpointPath,
+      method,
+      query_params: queryParams,
+      example_body: exampleBody || undefined,
+      example_result: exampleResult || undefined
+    };
+
+    try {
+      if (endpointId) {
+        await invoke('update_custom_endpoint', { configId, endpointId, endpointData });
+        this.showToast('Endpoint atualizado com sucesso!', 'success');
+      } else {
+        await invoke('save_custom_endpoint', { configId, endpointData });
+        this.showToast('Endpoint salvo com sucesso!', 'success');
+      }
+      
+      this.hideCustomEndpointModal();
+      
+      // Refresh the custom endpoints display
+      const currentConfigId = this.getCurrentConfigId();
+      if (currentConfigId === configId) {
+        await this.handleConfigSelection(configId);
+      }
+    } catch (error) {
+      this.showToast(`Erro ao salvar endpoint: ${error}`, 'error');
+    }
+  }
+
+  private async displayCustomEndpoints(config: Configuration, endpoints: CustomEndpoint[]) {
+    const openApiContent = document.getElementById('openapi-content') as HTMLDivElement;
+    
+    if (endpoints.length === 0) {
+      openApiContent.innerHTML = `
+        <div class="selected-config">
+          <div class="config-header">
+            ${config.url ? `
+            <div class="config-info">
+              <h3>${this.escapeHtml(config.name)}</h3>
+              <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
+              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
+            </div>
+            ` : ''}
+            <button id="add-custom-endpoint-btn" class="add-custom-endpoint-btn" data-config-id="${config.id}">
+              + Adicionar Endpoint Customizado
+            </button>
+          </div>
+          <div class="empty-state">
+            <p>Nenhum endpoint customizado adicionado ainda.</p>
+            <p>Clique em "+ Adicionar Endpoint Customizado" para começar.</p>
+          </div>
+        </div>
+      `;
+      
+      // Add event listener for the add button
+      document.getElementById('add-custom-endpoint-btn')?.addEventListener('click', () => {
+        this.showCustomEndpointModal(config.id);
+      });
+      
+      return;
+    }
+
+    // Display custom endpoints in a similar format to OpenAPI endpoints
+    let endpointsHtml = `
+      <div class="selected-config">
+        <div class="config-header">
+          ${config.url ? `
+          <div class="config-info">
+            <h3>${this.escapeHtml(config.name)}</h3>
+            <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
+            <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
+          </div>
+          ` : ''}
+          <button class="global-history-btn" data-config-id="${config.id}" title="Ver histórico de resultados">
+            📋 Histórico
+          </button>
+          <button id="add-custom-endpoint-btn" class="add-custom-endpoint-btn" data-config-id="${config.id}">
+            + Adicionar Endpoint Customizado
+          </button>
+        </div>
+        <div class="endpoints-container">
+    `;
+
+    const currentUser = await this.getCurrentUserName();
+
+    endpoints.forEach(endpoint => {
+      const pathId = this.normalizePath(endpoint.endpoint_path);
+      const isCreator = endpoint.created_by === currentUser;
+      
+      endpointsHtml += `
+        <div class="endpoint-item collapsed" data-method="${endpoint.method}" data-path="${endpoint.endpoint_path}">
+          <div class="endpoint-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <span class="method-badge ${endpoint.method.toLowerCase()}">${endpoint.method}</span>
+            <div class="endpoint-path-container">
+              <span class="endpoint-base-url">${this.escapeHtml(endpoint.base_url)}</span>
+              <h4 class="endpoint-path">${this.escapeHtml(endpoint.endpoint_path)}</h4>
+            </div>
+            <div class="endpoint-meta">
+              <h5 class="endpoint-name">${this.escapeHtml(endpoint.name)}</h5>
+              ${endpoint.description ? `<p class="endpoint-description">${this.escapeHtml(endpoint.description)}</p>` : ''}
+            </div>
+            <div class="endpoint-actions">
+              ${isCreator ? `
+                <button class="edit-endpoint-btn" data-endpoint-id="${endpoint.id}" title="Editar" onclick="event.stopPropagation()">✏️</button>
+                <button class="delete-endpoint-btn" data-endpoint-id="${endpoint.id}" title="Excluir" onclick="event.stopPropagation()">🗑️</button>
+              ` : ''}
+            </div>
+          </div>
+          ${endpoint.example_result ? `
+            <div class="example-result">
+              <details>
+                <summary>Exemplo de Resposta</summary>
+                <pre class="json-response">${this.escapeHtml(endpoint.example_result)}</pre>
+              </details>
+            </div>
+          ` : ''}
+          <div class="endpoint-content" id="endpoint-${endpoint.method}-${pathId}">
+            ${this.generateCustomTestInterface(endpoint, pathId, config)}
+          </div>
+        </div>
+      `;
+    });
+
+    endpointsHtml += `</div></div>`;
+    openApiContent.innerHTML = endpointsHtml;
+
+    // Add event listener for the add button
+    document.getElementById('add-custom-endpoint-btn')?.addEventListener('click', () => {
+      this.showCustomEndpointModal(config.id);
+    });
+
+    // Add event listeners for edit/delete buttons
+    document.querySelectorAll('.edit-endpoint-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const endpointId = (e.currentTarget as HTMLElement).dataset.endpointId;
+        const endpoint = endpoints.find(ep => ep.id === endpointId);
+        if (endpoint) {
+          this.showCustomEndpointModal(config.id, endpoint);
+        }
+      });
+    });
+
+    document.querySelectorAll('.delete-endpoint-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const endpointId = (e.currentTarget as HTMLElement).dataset.endpointId;
+        if (confirm('Tem certeza que deseja excluir este endpoint?')) {
+          try {
+            await invoke('delete_custom_endpoint', {
+              configId: config.id,
+              endpointId,
+              currentUser
+            });
+            this.showToast('Endpoint excluído com sucesso!', 'success');
+            await this.handleConfigSelection(config.id);
+          } catch (error) {
+            this.showToast(`Erro ao excluir endpoint: ${error}`, 'error');
+          }
+        }
+      });
+    });
+
+    // Attach event listeners for test interface
+    this.attachTestInterfaceListeners(config, endpoints);
+
+    // Attach event listeners for custom endpoint save/load buttons
+    this.attachCustomSaveLoadListeners(config, endpoints);
+  }
+
+  private generateCustomTestInterface(endpoint: CustomEndpoint, pathId: string, config: Configuration): string {
+    // Auto-detect path params from endpoint path
+    const pathParams: string[] = [];
+    const pathParamRegex = /\{([^}]+)\}/g;
+    let match;
+    while ((match = pathParamRegex.exec(endpoint.endpoint_path)) !== null) {
+      pathParams.push(match[1]);
+    }
+
+    let interfaceHtml = `
+      <div class="test-interface">
+    `;
+
+    // Path params section
+    if (pathParams.length > 0) {
+      interfaceHtml += `
+        <div class="test-section">
+          <div class="section-header">
+            <h4>Path Parameters</h4>
+            <button class="reset-btn" data-reset="custom-path-${endpoint.id}" title="Resetar Path Params">🔄</button>
+          </div>
+          <div class="params-grid">
+            ${pathParams.map(param => `
+              <div class="param-item">
+                <label>${this.escapeHtml(param)}</label>
+                <input type="text" class="path-param-input" data-param="${param}" placeholder="Valor para ${this.escapeHtml(param)}" />
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Query params section
+    if (endpoint.query_params && endpoint.query_params.length > 0) {
+      interfaceHtml += `
+        <div class="test-section">
+          <div class="section-header">
+            <h4>Query Parameters</h4>
+            <button class="reset-btn" data-reset="custom-query-${endpoint.id}" title="Resetar Query Params">🔄</button>
+          </div>
+          <div class="params-grid">
+            ${endpoint.query_params.map(param => `
+              <div class="param-item">
+                <label>${this.escapeHtml(param.name)}${param.required ? ' *' : ''}</label>
+                <input type="text" class="query-param-input" data-param="${param.name}" 
+                  placeholder="${param.default ? `Default: ${this.escapeHtml(param.default)}` : 'Valor'}" 
+                  value="${param.default || ''}" 
+                  data-default="${param.default || ''}" />
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Body section
+    if (endpoint.method === 'POST' || endpoint.method === 'PUT' || endpoint.method === 'PATCH') {
+      // Store default body in the map to avoid HTML attribute escaping issues
+      const bodyKey = `${endpoint.method}-${pathId}`;
+      this.defaultBodyValues.set(bodyKey, endpoint.example_body || '');
+
+      interfaceHtml += `
+        <div class="test-section">
+          <div class="section-header">
+            <h4>Body (JSON)</h4>
+            <button class="reset-btn" data-reset="custom-body-${endpoint.id}" title="Resetar Body">🔄</button>
+          </div>
+          <textarea id="body-${endpoint.method}-${pathId}" class="json-textarea" 
+            placeholder='{"key": "value"}' rows="4">${endpoint.example_body ? this.escapeHtml(endpoint.example_body) : ''}</textarea>
+        </div>
+      `;
+    }
+
+    // Saved sets section
+    interfaceHtml += `
+        <details class="saved-sets-section">
+          <summary>Conjuntos de Valores Salvos:</summary>
+          <div class="save-set-controls">
+            <input
+              type="text"
+              id="save-name-custom-${endpoint.id}"
+              placeholder="Nome do conjunto"
+              class="save-name-input"
+            />
+            <button
+              class="save-set-btn save-custom-set-btn"
+              data-endpoint-id="${endpoint.id}"
+              data-config-id="${config.id}"
+            >
+              Salvar Local
+            </button>
+            <button
+              class="save-set-database-btn save-custom-set-database-btn"
+              data-endpoint-id="${endpoint.id}"
+              data-config-id="${config.id}"
+              title="Salvar no banco de dados"
+            >
+              Salvar no banco de dados
+            </button>
+          </div>
+          <div class="load-set-controls">
+            <label for="saved-sets-custom-${endpoint.id}">Carregar conjunto:</label>
+            <div class="load-set-row">
+              <select
+                id="saved-sets-filter-custom-${endpoint.id}"
+                class="saved-sets-filter saved-custom-sets-filter"
+                data-endpoint-id="${endpoint.id}"
+                data-config-id="${config.id}"
+              >
+                <option value="todos">Todos</option>
+                <option value="local">Apenas local</option>
+                <option value="database">Apenas banco de dados</option>
+              </select>
+              <select
+                id="saved-sets-custom-${endpoint.id}"
+                class="saved-sets-select saved-custom-sets-select"
+                data-endpoint-id="${endpoint.id}"
+                data-config-id="${config.id}"
+              >
+                <option value="">Selecione um conjunto salvo...</option>
+              </select>
+              <button
+                class="reload-sets-btn reload-custom-sets-btn"
+                data-endpoint-id="${endpoint.id}"
+                data-config-id="${config.id}"
+                title="Recarregar conjuntos salvos"
+              >
+                🔄
+              </button>
+            </div>
+          </div>
+        </details>
+    `;
+
+    // Test button and result
+    interfaceHtml += `
+        <div class="test-section">
+          <button class="test-btn" data-method="${endpoint.method}" data-path="${endpoint.endpoint_path}" data-path-id="${pathId}" data-base-url="${endpoint.base_url}" data-endpoint-id="${endpoint.id}">
+            Testar Endpoint
+          </button>
+          <div id="test-result-${endpoint.method}-${pathId}" class="test-result"></div>
+        </div>
+      </div>
+    `;
+
+    return interfaceHtml;
+  }
+
+  private attachTestInterfaceListeners(config: Configuration, endpoints: CustomEndpoint[]) {
+    endpoints.forEach(endpoint => {
+      const pathId = this.normalizePath(endpoint.endpoint_path);
+      const testBtn = document.querySelector(`.test-btn[data-method="${endpoint.method}"][data-path-id="${pathId}"]`) as HTMLButtonElement;
+
+      if (testBtn) {
+        testBtn.addEventListener('click', () => {
+          this.executeCustomTest(endpoint, config, pathId);
+        });
+      }
+    });
+  }
+
+  private attachCustomSaveLoadListeners(config: Configuration, endpoints: CustomEndpoint[]) {
+    endpoints.forEach(endpoint => {
+      // Save local button
+      const saveLocalBtn = document.querySelector(`.save-custom-set-btn[data-endpoint-id="${endpoint.id}"]`) as HTMLButtonElement;
+      if (saveLocalBtn) {
+        saveLocalBtn.addEventListener('click', () => {
+          this.saveCustomValueSet(endpoint.id, config.id, 'local');
+        });
+      }
+
+      // Save database button
+      const saveDatabaseBtn = document.querySelector(`.save-custom-set-database-btn[data-endpoint-id="${endpoint.id}"]`) as HTMLButtonElement;
+      if (saveDatabaseBtn) {
+        saveDatabaseBtn.addEventListener('click', () => {
+          this.saveCustomValueSet(endpoint.id, config.id, 'database');
+        });
+      }
+
+      // Select change - auto-load when a value is selected
+      const select = document.getElementById(`saved-sets-custom-${endpoint.id}`) as HTMLSelectElement;
+      if (select) {
+        select.addEventListener('change', () => {
+          const savedSetId = select.value;
+          if (savedSetId) {
+            this.loadCustomValueSet(endpoint.id, config.id, savedSetId);
+          }
+        });
+      }
+
+      // Filter select
+      const filterSelect = document.getElementById(`saved-sets-filter-custom-${endpoint.id}`) as HTMLSelectElement;
+      if (filterSelect) {
+        filterSelect.addEventListener('change', () => {
+          this.updateCustomSavedSetsSelect(endpoint.id, config.id);
+        });
+      }
+
+      // Reload button
+      const reloadBtn = document.querySelector(`.reload-custom-sets-btn[data-endpoint-id="${endpoint.id}"]`) as HTMLButtonElement;
+      if (reloadBtn) {
+        reloadBtn.addEventListener('click', () => {
+          this.updateCustomSavedSetsSelect(endpoint.id, config.id);
+        });
+      }
+
+      // Initialize the saved sets select
+      this.updateCustomSavedSetsSelect(endpoint.id, config.id);
+    });
+  }
+
+  private async executeCustomTest(endpoint: CustomEndpoint, config: Configuration, pathId: string) {
+    // Collect path params
+    const pathParams: Record<string, string> = {};
+    const pathParamInputs = document.querySelectorAll(`#endpoint-${endpoint.method}-${pathId} .path-param-input`);
+    pathParamInputs.forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      if (param) {
+        pathParams[param] = (input as HTMLInputElement).value;
+      }
+    });
+
+    // Collect query params
+    const queryParams: Record<string, string> = {};
+    const queryParamInputs = document.querySelectorAll(`#endpoint-${endpoint.method}-${pathId} .query-param-input`);
+    queryParamInputs.forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      if (param) {
+        queryParams[param] = (input as HTMLInputElement).value;
+      }
+    });
+
+    // Collect body
+    const bodyTextarea = document.getElementById(`body-${endpoint.method}-${pathId}`) as HTMLTextAreaElement;
+    const body = bodyTextarea?.value || '';
+
+    const testResult = document.getElementById(`test-result-${endpoint.method}-${pathId}`);
+    if (!testResult) return;
+
+    testResult.innerHTML = '<div class="test-loading">Executando teste...</div>';
+
+    try {
+      // Replace path params in the endpoint path
+      let processedPath = endpoint.endpoint_path;
+      Object.entries(pathParams).forEach(([key, value]) => {
+        processedPath = processedPath.replace(`{${key}}`, encodeURIComponent(value));
+      });
+
+      const baseUrl = endpoint.base_url.replace(/\/$/, '');
+      const queryString = Object.keys(queryParams).length > 0 
+        ? '?' + Object.entries(queryParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+        : '';
+
+      const fullUrl = `${baseUrl}${processedPath}${queryString}`;
+
+      // Process headers
+      const processedHeaders: Record<string, string> = {};
+      let sentUuid: string | undefined;
+      
+      if (config.useDefaultAuth) {
+        const token = await invoke<string>('get_gcloud_token');
+        processedHeaders['Authorization'] = `Bearer ${token}`;
+        processedHeaders['TokenPortal'] = token;
+      }
+
+      if (config.headers) {
+        config.headers.forEach(header => {
+          let value = header.value;
+          if (value === 'uuid') {
+            const uuid = this.generateUUID();
+            processedHeaders[header.name] = uuid;
+            sentUuid = uuid;
+          } else {
+            processedHeaders[header.name] = value;
+          }
+        });
+      }
+
+      const response = await invoke<TestResponse>('make_test_request', {
+        url: fullUrl,
+        method: endpoint.method,
+        useAuth: config.useDefaultAuth,
+        headers: processedHeaders,
+        body: endpoint.method !== 'GET' && endpoint.method !== 'HEAD' ? body : undefined
+      });
+
+      const timestamp = new Date().toISOString();
+      const hasData = response.data && (typeof response.data === 'object' && Object.keys(response.data).length > 0 || typeof response.data === 'string' && response.data.trim());
+
+      // Generate consistent pathId for search functionality
+      const searchPathId = `${endpoint.method.toLowerCase()}-${endpoint.endpoint_path.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+
+      // Display result with save buttons (same format as regular endpoints)
+      testResult.innerHTML = `
+        <div class="test-result success">
+          <div class="test-status">
+            <div class="test-status-header">
+              <h5>Resposta ${response.status || 200} ${response.statusText || 'OK'}</h5>
+              ${hasData ? `
+                <div class="test-result-actions">
+                  <input 
+                    type="text" 
+                    id="result-name-${endpoint.method}-${pathId}"
+                    class="result-name-input"
+                    placeholder="Nome do resultado..."
+                    value="Resultado_${new Date().toLocaleString('pt-BR').replace(/[^\w]/g, '_')}"
+                  />
+                  <button 
+                    class="save-result-btn save-local-btn" 
+                    data-method="${endpoint.method}"
+                    data-path="${endpoint.endpoint_path}"
+                    data-config-id="${config.id}"
+                    data-timestamp="${timestamp}"
+                    data-save-type="local"
+                    data-is-custom="true"
+                  >
+                    Salvar Local
+                  </button>
+                  ${config.databaseName ? `
+                    <button 
+                      class="save-result-btn save-database-btn" 
+                      data-method="${endpoint.method}"
+                      data-path="${endpoint.endpoint_path}"
+                      data-config-id="${config.id}"
+                      data-timestamp="${timestamp}"
+                      data-save-type="database"
+                      data-is-custom="true"
+                    >
+                      Salvar no BD
+                    </button>
+                  ` : ''}
+                  <button 
+                    class="show-history-btn" 
+                    data-method="${endpoint.method}"
+                    data-path="${endpoint.endpoint_path}"
+                    data-config-id="${config.id}"
+                  >
+                    Exibir Histórico
+                  </button>
+                </div>
+              ` : ''}
+            </div>
+            ${response.headers ? `
+              <div class="test-headers-section">
+                <details>
+                  <summary>Response Headers</summary>
+                  <div class="headers-data-wrapper">
+                    <pre id="headers-${endpoint.method}-${pathId}" class="test-headers">${this.escapeHtml(JSON.stringify(response.headers, null, 2))}</pre>
+                    <button class="copy-btn" data-target="headers-${endpoint.method}-${pathId}">📋 Copiar</button>
+                  </div>
+                </details>
+              </div>
+            ` : ''}
+          </div>
+          <div class="test-response">
+            <details open>
+              <summary>Resposta</summary>
+              <div class="response-search-container">
+                <div class="response-search-header">
+                  <input type="text" 
+                         id="response-search-${searchPathId}" 
+                         class="response-search-input" 
+                         placeholder="Buscar na resposta..." 
+                         data-response-id="response-${searchPathId}">
+                  <button class="response-search-clear" data-search-input="response-search-${searchPathId}" title="Limpar busca">×</button>
+                </div>
+                <div class="response-search-info" id="response-search-info-${searchPathId}"></div>
+              </div>
+              <div class="response-data-wrapper">
+                <pre id="response-${searchPathId}" class="test-response-data">${this.escapeHtml(typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2))}</pre>
+                <button class="copy-btn" data-target="response-${searchPathId}">📋 Copiar</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      `;
+
+      // Attach event listeners for save buttons
+      const saveButtons = testResult.querySelectorAll('.save-result-btn');
+      saveButtons.forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const button = e.currentTarget as HTMLButtonElement;
+          const saveType = button.dataset.saveType as 'local' | 'database';
+          const resultNameInput = document.getElementById(`result-name-${endpoint.method}-${pathId}`) as HTMLInputElement;
+          const resultName = resultNameInput?.value?.trim();
+          
+          if (!resultName) {
+            this.showToast('Por favor, digite um nome para este resultado.', 'error');
+            return;
+          }
+
+          try {
+            const requestData = {
+              url: fullUrl,
+              method: endpoint.method,
+              headers: processedHeaders,
+              body: endpoint.method !== 'GET' && endpoint.method !== 'HEAD' ? body : undefined,
+              pathParams,
+              queryParams,
+              sentUuid
+            };
+
+            if (saveType === 'local') {
+              await this.saveCustomTestResultLocal(config.id, endpoint.method, endpoint.endpoint_path, resultName, requestData, response, timestamp);
+              this.showToast('Resultado salvo localmente com sucesso!', 'success');
+            } else {
+              await this.saveCustomTestResultDatabase(config.databaseName!, config.id, endpoint.method, endpoint.endpoint_path, resultName, requestData, response, timestamp);
+              this.showToast('Resultado salvo no banco de dados com sucesso!', 'success');
+            }
+          } catch (error) {
+            this.showToast(`Erro ao salvar resultado: ${error}`, 'error');
+          }
+        });
+      });
+
+      // Setup search functionality for response
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          this.setupResponseSearch(endpoint.method, endpoint.endpoint_path, config.id);
+        }, 100);
+      });
+
+      // Attach copy button listeners
+      this.attachCopyButtonsListeners();
+
+      // Attach history button listener
+      const historyBtn = testResult.querySelector('.show-history-btn') as HTMLButtonElement;
+      if (historyBtn) {
+        historyBtn.addEventListener('click', () => {
+          this.showHistoryModal(config.id);
+        });
+      }
+    } catch (error) {
+      testResult.innerHTML = `
+        <div class="test-error">
+          <h4>Erro ao executar teste:</h4>
+          <pre>${this.escapeHtml(String(error))}</pre>
+        </div>
+      `;
+    }
+  }
+
+  private async saveCustomTestResultLocal(configId: string, method: string, path: string, name: string, requestData: any, response: TestResponse, timestamp: string) {
+    await this.loadSavedResults();
+    
+    if (!this.savedResults[configId]) {
+      this.savedResults[configId] = [];
+    }
+    
+    const result: SavedResult = {
+      id: this.generateUUID(),
+      name,
+      endpoint: {
+        method,
+        path,
+        configId
+      },
+      request: {
+        pathParams: requestData.pathParams || {},
+        queryParams: requestData.queryParams || {},
+        body: requestData.body || '',
+        sentUuid: requestData.sentUuid
+      },
+      response: {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+        data: response.data
+      },
+      timestamp
+    };
+    
+    this.savedResults[configId].push(result);
+    await this.saveSavedResults();
+  }
+
+  private async saveCustomTestResultDatabase(secretName: string, configId: string, method: string, path: string, name: string, requestData: any, response: TestResponse, timestamp: string) {
+    const currentUser = await this.getCurrentUserName();
+    
+    // Remove Authorization and TokenPortal headers from saved data for security
+    const sanitizedRequestData = {
+      ...requestData,
+      headers: requestData.headers ? Object.fromEntries(
+        Object.entries(requestData.headers).filter(([key]) => 
+          key.toLowerCase() !== 'authorization' && key.toLowerCase() !== 'tokenportal'
+        )
+      ) : {}
+    };
+    
+    await invoke('save_to_postgres', {
+      secretName,
+      configId,
+      endpointMethod: method,
+      endpointPath: path,
+      resultData: {
+        id: this.generateUUID(),
+        name,
+        request: sanitizedRequestData,
+        response: {
+          status: response.status || 200,
+          statusText: response.statusText || 'OK',
+          headers: response.headers || {},
+          data: response.data
+        },
+        timestamp,
+        userAccount: currentUser
+      }
+    });
+  }
+
   private toggleExtrasDropdown() {
     this.elements.extrasDropdown.classList.toggle('hidden');
   }
@@ -852,6 +1782,10 @@ class ConfigManager {
     
     if (!this.elements.aboutModal.classList.contains('hidden')) {
       this.hideAboutModal();
+    }
+    
+    if (!this.elements.customEndpointModal.classList.contains('hidden')) {
+      this.hideCustomEndpointModal();
     }
     
     // Verificar se modal de histórico está aberto
@@ -873,19 +1807,13 @@ class ConfigManager {
     const useDefaultAuth = this.elements.authCheckbox.checked;
     const headers = this.getHeadersFromForm();
 
-    if (!name || !url) {
+    if (!name) {
+      this.showToast('Por favor, digite um nome para a configuração.', 'error');
       return;
     }
 
-    // Verificar se já existe configuração com a mesma URL (apenas para novas configurações)
-    if (!this.editingId) {
-      const normalizedUrlId = this.normalizeUrlToId(url);
-      const existingConfig = this.configs.find(c => c.id === normalizedUrlId);
-      if (existingConfig) {
-        this.showToast(`Já existe uma configuração para esta URL: ${existingConfig.name}`, 'error');
-        return;
-      }
-    }
+    // Get current user for created_by
+    const currentUser = await this.getCurrentUserName();
 
     if (this.editingId) {
       const configIndex = this.configs.findIndex(c => c.id === this.editingId);
@@ -893,20 +1821,25 @@ class ConfigManager {
         this.configs[configIndex] = {
           id: this.editingId,
           name,
-          url,
+          url: url || undefined,
           databaseName,
           useDefaultAuth,
-          headers
+          headers,
+          created_by: this.configs[configIndex].created_by || currentUser
         };
       }
     } else {
+      // For custom configs without URL, use UUID instead of URL normalization
+      const configId = url ? this.normalizeUrlToId(url) : this.generateUUID();
+      
       const newConfig: Configuration = {
-        id: this.normalizeUrlToId(url),
+        id: configId,
         name,
-        url,
+        url: url || undefined,
         databaseName,
         useDefaultAuth,
-        headers
+        headers,
+        created_by: currentUser
       };
       this.configs.push(newConfig);
     }
@@ -946,7 +1879,7 @@ class ConfigManager {
       <div class="config-item" data-id="${config.id}">
         <div class="config-details">
           <h4>${this.escapeHtml(config.name)}</h4>
-          <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
+          <p><strong>URL:</strong> ${config.url ? this.escapeHtml(config.url) : 'Configuração Customizada'}</p>
           <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
           ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
           ${config.headers && config.headers.length > 0 ? `
@@ -990,7 +1923,7 @@ class ConfigManager {
 
     this.editingId = id;
     this.elements.nameInput.value = config.name;
-    this.elements.urlInput.value = config.url;
+    this.elements.urlInput.value = config.url || '';
     this.elements.databaseInput.value = config.databaseName || '';
     this.elements.authCheckbox.checked = config.useDefaultAuth;
     
@@ -1100,21 +2033,9 @@ class ConfigManager {
         const method = target.dataset.method;
         const path = target.dataset.path;
         const configId = target.dataset.configId;
-        
+
         if (method && path && configId) {
           await this.deleteValueSet(method, path, configId);
-        }
-      });
-    });
-
-    // Adicionar event listener para o botão global de histórico
-    document.querySelectorAll('.global-history-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const configId = target.dataset.configId;
-        
-        if (configId) {
-          this.showHistoryModal(configId);
         }
       });
     });
@@ -1208,6 +2129,147 @@ class ConfigManager {
         reloadBtn.innerHTML = '🔄 Recarregar Secret';
         reloadBtn.disabled = false;
       }
+    }
+  }
+
+  private async saveCustomValueSet(endpointId: string, configId: string, saveType: 'local' | 'database' = 'local') {
+    const nameInput = document.getElementById(`save-name-custom-${endpointId}`) as HTMLInputElement;
+    const name = nameInput?.value?.trim();
+
+    if (!name) {
+      this.showToast('Por favor, digite um nome para este conjunto de valores.', 'error');
+      return;
+    }
+
+    // Get the endpoint to get the actual HTTP method
+    const config = this.configs.find(c => c.id === configId);
+    if (!config) {
+      this.showToast('Configuração não encontrada.', 'error');
+      return;
+    }
+
+    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+    const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
+    if (!endpoint) {
+      this.showToast('Endpoint não encontrado.', 'error');
+      return;
+    }
+
+    const pathId = this.normalizePath(endpoint.endpoint_path);
+
+    // Get the endpoint element to collect path params and query params
+    const endpointElement = document.querySelector(`#endpoint-${endpoint.method}-${pathId}`) as HTMLElement;
+    if (!endpointElement) {
+      this.showToast('Elemento do endpoint não encontrado.', 'error');
+      return;
+    }
+
+    // Coletar path params atuais
+    const pathParams: Record<string, string> = {};
+    endpointElement.querySelectorAll('.path-param-input').forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      const value = (input as HTMLInputElement).value;
+      if (param) {
+        pathParams[param] = value;
+      }
+    });
+
+    // Coletar query params atuais
+    const queryParams: Record<string, string> = {};
+    endpointElement.querySelectorAll('.query-param-input').forEach(input => {
+      const param = (input as HTMLInputElement).dataset.param;
+      const value = (input as HTMLInputElement).value;
+      if (param) {
+        queryParams[param] = value;
+      }
+    });
+
+    // Coletar body atual
+    const bodyTextarea = document.getElementById(`body-${endpoint.method}-${pathId}`) as HTMLTextAreaElement;
+    const body = bodyTextarea?.value || '';
+
+    if (saveType === 'database') {
+      const dbName = config?.databaseName || config?.gcpSecretName;
+      if (!dbName) {
+        this.showToast('Configuração não possui banco de dados configurado.', 'error');
+        return;
+      }
+
+      try {
+        const userAccount = await this.getCurrentUserName();
+
+        const valueSetData = {
+          name,
+          pathParams,
+          queryParams,
+          body,
+          userAccount,
+          endpointId,
+          savedIn: 'database'
+        };
+
+        // Salvar no banco de dados
+        const objectPath = await invoke<string>('save_value_set_to_postgres', {
+          secretName: dbName,
+          configId,
+          endpointMethod: endpoint.method,
+          endpointPath: endpoint.endpoint_path,
+          valueSetData
+        });
+
+        this.showToast(`Conjunto de valores salvo no banco de dados com sucesso! (${objectPath})`, 'success');
+
+        // Atualizar o select para incluir os conjuntos do banco de dados
+        this.updateCustomSavedSetsSelect(endpointId, configId);
+
+      } catch (error) {
+        console.error('Failed to save custom value set to PostgreSQL database:', error);
+        this.showToast(`Erro ao salvar no banco de dados: ${String(error)}`, 'error');
+      }
+    } else {
+      // Salvar localmente
+      // Inicializar estrutura se não existir
+      if (!this.customSavedValueSets[configId]) {
+        this.customSavedValueSets[configId] = {};
+      }
+      if (!this.customSavedValueSets[configId][endpointId]) {
+        this.customSavedValueSets[configId][endpointId] = [];
+      }
+
+      // Verificar se já existe um conjunto com o mesmo nome
+      const existingIndex = this.customSavedValueSets[configId][endpointId].findIndex(set => set.name === name);
+
+      if (existingIndex !== -1) {
+        // Substituir o conjunto existente
+        this.customSavedValueSets[configId][endpointId][existingIndex] = {
+          ...this.customSavedValueSets[configId][endpointId][existingIndex],
+          pathParams,
+          queryParams,
+          body,
+          createdAt: new Date().toISOString()
+        };
+        this.showToast('Conjunto de valores atualizado com sucesso!', 'success');
+      } else {
+        // Criar novo conjunto
+        const savedSet: SavedValueSet = {
+          id: Date.now().toString(),
+          name,
+          pathParams,
+          queryParams,
+          body,
+          createdAt: new Date().toISOString()
+        };
+
+        // Adicionar o conjunto salvo
+        this.customSavedValueSets[configId][endpointId].push(savedSet);
+        this.showToast('Conjunto de valores salvo com sucesso!', 'success');
+      }
+
+      // Salvar no app_data_dir
+      await this.saveCustomSavedValueSets();
+
+      // Atualizar o select
+      this.updateCustomSavedSetsSelect(endpointId, configId);
     }
   }
 
@@ -1339,6 +2401,176 @@ class ConfigManager {
       
       // Atualizar o select
       this.updateSavedSetsSelect(method, path, configId);
+    }
+  }
+
+  private async loadCustomValueSet(endpointId: string, configId: string, savedSetId: string) {
+    // Get the endpoint to get the actual HTTP method and path
+    const config = this.configs.find(c => c.id === configId);
+    if (!config) {
+      this.showToast('Configuração não encontrada.', 'error');
+      return;
+    }
+
+    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+    const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
+    if (!endpoint) {
+      this.showToast('Endpoint não encontrado.', 'error');
+      return;
+    }
+
+    const pathId = this.normalizePath(endpoint.endpoint_path);
+
+    // Get the endpoint element to fill in the values
+    const endpointElement = document.querySelector(`#endpoint-${endpoint.method}-${pathId}`) as HTMLElement;
+    if (!endpointElement) {
+      this.showToast('Elemento do endpoint não encontrado.', 'error');
+      return;
+    }
+
+    // Verificar se é um conjunto do banco de dados ou local
+    const isDatabaseSet = savedSetId.startsWith('database-');
+    const actualId = isDatabaseSet ? savedSetId.substring(9) : savedSetId.substring(6); // Remove "database-" ou "local-"
+
+    let savedSet: any;
+
+    if (isDatabaseSet) {
+      // Carregar conjunto do banco de dados
+      try {
+        if (!config.databaseName) {
+          this.showToast('Configuração não possui banco de dados configurado.', 'error');
+          return;
+        }
+
+        const result = await invoke<any>('load_value_set_from_postgres', {
+          secretName: config.databaseName,
+          configId: config.id,
+          valueSetId: actualId
+        });
+
+        if (result) {
+          savedSet = result;
+        } else {
+          this.showToast('Conjunto não encontrado no banco de dados.', 'error');
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to load custom value set from database:', error);
+        this.showToast('Erro ao carregar conjunto do banco de dados.', 'error');
+        return;
+      }
+    } else {
+      // Carregar conjunto local
+      savedSet = this.customSavedValueSets[configId]?.[endpointId]?.find(set => set.id === actualId);
+
+      if (!savedSet) {
+        console.error('Conjunto salvo não encontrado:', actualId);
+        return;
+      }
+    }
+
+    // Preencher path params
+    Object.entries(savedSet.pathParams).forEach(([param, value]) => {
+      const input = endpointElement.querySelector(`.path-param-input[data-param="${param}"]`) as HTMLInputElement;
+      if (input) {
+        input.value = String(value);
+        input.setAttribute('value', String(value));
+      }
+    });
+
+    // Preencher query params
+    Object.entries(savedSet.queryParams).forEach(([param, value]) => {
+      const input = endpointElement.querySelector(`.query-param-input[data-param="${param}"]`) as HTMLInputElement;
+      if (input) {
+        input.value = String(value);
+        input.setAttribute('value', String(value));
+      }
+    });
+
+    // Preencher body
+    const bodyTextarea = document.getElementById(`body-${endpoint.method}-${pathId}`) as HTMLTextAreaElement;
+    if (bodyTextarea) {
+      bodyTextarea.value = savedSet.body;
+    }
+
+    // Preencher o input do nome com o nome do conjunto
+    const nameInput = document.getElementById(`save-name-custom-${endpointId}`) as HTMLInputElement;
+    if (nameInput) {
+      nameInput.value = savedSet.name;
+    }
+  }
+
+  private async updateCustomSavedSetsSelect(endpointId: string, configId: string) {
+    const select = document.getElementById(`saved-sets-custom-${endpointId}`) as HTMLSelectElement;
+    const filterSelect = document.getElementById(`saved-sets-filter-custom-${endpointId}`) as HTMLSelectElement;
+
+    if (!select || !filterSelect) {
+      console.error('Select elements not found for endpointId:', endpointId);
+      return;
+    }
+
+    const filterType = filterSelect.value;
+
+    select.innerHTML = '<option value="">Selecione um conjunto salvo...</option>';
+
+    // Get the endpoint to get the actual HTTP method and path
+    const config = this.configs.find(c => c.id === configId);
+    if (!config) {
+      console.error('Config not found for configId:', configId);
+      return;
+    }
+
+    try {
+      const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+      
+      const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
+      if (!endpoint) {
+        console.error('Endpoint not found for endpointId:', endpointId);
+        return;
+      }
+
+      // Adicionar conjuntos locais
+      if (filterType === 'todos' || filterType === 'local') {
+        const localSets = this.customSavedValueSets[configId]?.[endpointId] || [];
+        localSets.forEach(savedSet => {
+          const option = document.createElement('option');
+          option.value = `local-${savedSet.id}`;
+          option.textContent = `${savedSet.name} (${new Date(savedSet.createdAt).toLocaleDateString()}) [Local]`;
+          select.appendChild(option);
+        });
+      }
+
+      // Adicionar conjuntos do banco de dados
+      if (filterType === 'todos' || filterType === 'database') {
+        if (config && config.databaseName) {
+          
+          const results = await invoke<any>('list_postgres_value_sets', {
+            secretName: config.databaseName,
+            configId,
+            endpointMethod: endpoint.method,
+            endpointPath: endpoint.endpoint_path
+          });
+
+          // Handle both array and object with valueSets property
+          const valueSets = Array.isArray(results) ? results : (results?.valueSets || []);
+          
+          if (valueSets.length > 0) {
+            valueSets.forEach((valueSet: any) => {
+              const option = document.createElement('option');
+              // Handle different response structures
+              const objectPath = valueSet.objectPath || valueSet.id;
+              const name = valueSet.valueSet?.name || valueSet.name;
+              const createdAt = valueSet.createdAt || valueSet.valueSet?.createdAt;
+              
+              option.value = `database-${objectPath}`;
+              option.textContent = `${name} (${new Date(createdAt).toLocaleDateString()}) [Banco de Dados]`;
+              select.appendChild(option);
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in updateCustomSavedSetsSelect:', error);
     }
   }
 
@@ -1968,6 +3200,7 @@ class ConfigManager {
         // Re-adicionar listeners para os novos botões
         this.attachCopyButtonsListeners();
         this.attachDeleteButtonListeners(modal);
+        this.setupHistoryResponseSearchListeners();
       };
 
       // Event listeners para busca e usuário
@@ -1999,20 +3232,20 @@ class ConfigManager {
     this.attachDeleteButtonListeners(modal);
 
     // Adicionar event listeners para busca individual em cada resultado
-    this.setupHistoryResponseSearchListeners(configId);
+    this.setupHistoryResponseSearchListeners();
   }
 
-  private setupHistoryResponseSearchListeners(configId: string) {
+  private setupHistoryResponseSearchListeners() {
     // Configurar busca para cada resultado individual no histórico
-    const results = this.savedResults[configId] || [];
+    const searchInputs = document.querySelectorAll('.history-response-search-input') as NodeListOf<HTMLInputElement>;
     
-    results.forEach(result => {
-      const searchInput = document.getElementById(`history-response-search-${result.id}`) as HTMLInputElement;
-      const clearBtn = document.querySelector(`[data-search-input="history-response-search-${result.id}"]`) as HTMLButtonElement;
-      const responseContainer = document.getElementById(`history-response-${result.id}`) as HTMLPreElement;
-      const searchInfo = document.getElementById(`history-response-search-info-${result.id}`) as HTMLDivElement;
+    searchInputs.forEach(searchInput => {
+      const resultId = searchInput.id.replace('history-response-search-', '');
+      const clearBtn = document.querySelector(`[data-search-input="history-response-search-${resultId}"]`) as HTMLButtonElement;
+      const responseContainer = document.getElementById(`history-response-${resultId}`) as HTMLPreElement;
+      const searchInfo = document.getElementById(`history-response-search-info-${resultId}`) as HTMLDivElement;
 
-      if (searchInput && clearBtn && responseContainer && searchInfo) {
+      if (clearBtn && responseContainer && searchInfo) {
         let currentMatchIndex = 0;
         let matches: HTMLElement[] = [];
         let originalContent = responseContainer.innerHTML;
@@ -2052,31 +3285,7 @@ class ConfigManager {
           }
         };
 
-        const navigateResults = (direction: number) => {
-          if (matches.length === 0) return;
-          
-          currentMatchIndex = (currentMatchIndex + direction + matches.length) % matches.length;
-          searchInfo.textContent = `${currentMatchIndex + 1} de ${matches.length}`;
-          this.scrollToResponseMatch(matches[currentMatchIndex]);
-        };
-
-        // Event listeners
         searchInput.addEventListener('input', performSearch);
-        
-        searchInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            if (e.shiftKey) {
-              navigateResults(-1);
-            } else {
-              navigateResults(1);
-            }
-          } else if (e.key === 'Escape') {
-            searchInput.value = '';
-            performSearch();
-          }
-        });
-
         clearBtn.addEventListener('click', () => {
           searchInput.value = '';
           performSearch();
@@ -2423,7 +3632,7 @@ class ConfigManager {
     testResult.innerHTML = '<div class="test-loading">Executando teste...</div>';
 
     try {
-      const baseUrl = config.url.replace(/\/$/, '');
+      const baseUrl = config.url ? config.url.replace(/\/$/, '') : '';
       const queryString = Object.keys(queryParams).length > 0 
         ? '?' + Object.entries(queryParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
         : '';
@@ -2512,11 +3721,13 @@ class ConfigManager {
             <p><strong>URL:</strong> ${this.escapeHtml(fullUrl)}</p>
             ${response.headers ? `
               <div class="test-headers-section">
-                <div class="section-header">
-                  <p><strong>Response Headers:</strong></p>
-                  <button class="copy-btn" data-target="headers-${method}-${pathId}">📋 Copiar</button>
-                </div>
-                <pre id="headers-${method}-${pathId}" class="test-headers">${this.escapeHtml(JSON.stringify(response.headers, null, 2))}</pre>
+                <details>
+                  <summary>Response Headers</summary>
+                  <div class="headers-data-wrapper">
+                    <pre id="headers-${method}-${pathId}" class="test-headers">${this.escapeHtml(JSON.stringify(response.headers, null, 2))}</pre>
+                    <button class="copy-btn" data-target="headers-${method}-${pathId}">📋 Copiar</button>
+                  </div>
+                </details>
               </div>
             ` : ''}
             ${body ? `
@@ -2530,22 +3741,24 @@ class ConfigManager {
             ` : ''}
           </div>
           <div class="test-response">
-            <div class="section-header">
-              <h6>Resposta:</h6>
-              <button class="copy-btn" data-target="response-${pathId}">📋 Copiar</button>
-            </div>
-            <div class="response-search-container">
-              <div class="response-search-header">
-                <input type="text" 
-                       id="response-search-${pathId}" 
-                       class="response-search-input" 
-                       placeholder="Buscar na resposta..." 
-                       data-response-id="response-${pathId}">
-                <button class="response-search-clear" data-search-input="response-search-${pathId}" title="Limpar busca">×</button>
+            <details open>
+              <summary>Resposta</summary>
+              <div class="response-search-container">
+                <div class="response-search-header">
+                  <input type="text" 
+                         id="response-search-${pathId}" 
+                         class="response-search-input" 
+                         placeholder="Buscar na resposta..." 
+                         data-response-id="response-${pathId}">
+                  <button class="response-search-clear" data-search-input="response-search-${pathId}" title="Limpar busca">×</button>
+                </div>
+                <div class="response-search-info" id="response-search-info-${pathId}"></div>
               </div>
-              <div class="response-search-info" id="response-search-info-${pathId}"></div>
-            </div>
-            <pre id="response-${pathId}" class="test-response-data">${this.escapeHtml(typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2))}</pre>
+              <div class="response-data-wrapper">
+                <pre id="response-${pathId}" class="test-response-data">${this.escapeHtml(typeof response.data === 'string' ? response.data : JSON.stringify(response.data, null, 2))}</pre>
+                <button class="copy-btn" data-target="response-${pathId}">📋 Copiar</button>
+              </div>
+            </details>
           </div>
         </div>
       `;
@@ -2665,13 +3878,13 @@ class ConfigManager {
             data-path="${path}"
             data-config-id="${configId}"
           >
-            Testar ${method.toUpperCase()}
+            Testar Endpoint
           </button>
         </div>
         
         ${hasAnythingToSave ? `
-        <div class="saved-sets-section">
-          <h6>Conjuntos de Valores Salvos:</h6>
+        <details class="saved-sets-section">
+          <summary>Conjuntos de Valores Salvos:</summary>
           <div class="save-set-controls">
             <input 
               type="text" 
@@ -2735,7 +3948,7 @@ class ConfigManager {
               </div>
             </div>
           </div>
-        </div>
+        </details>
         ` : ''}
         
         <div id="test-result-${method}-${pathId}" class="test-result-container"></div>
@@ -2809,12 +4022,12 @@ class ConfigManager {
   private async updateWindowTitle() {
     try {
       const currentConfigId = this.getCurrentConfigId();
-      let title = 'OpenAPIUI';
+      let title = 'EasyOpenAPI';
       
       if (currentConfigId) {
         const config = this.configs.find(c => c.id === currentConfigId);
         if (config) {
-          title = `OpenAPIUI - ${config.name}`;
+          title = `EasyOpenAPI - ${config.name}`;
         }
       }
       
@@ -2897,12 +4110,14 @@ class ConfigManager {
     // Adicionar ao DOM
     document.body.appendChild(toast);
     
-    // Remover após 10 segundos
+    // Remover após
+    // sucesso = 4 segundos
+    // erro = 10 segundos
     setTimeout(() => {
       if (toast.parentNode) {
         toast.parentNode.removeChild(toast);
       }
-    }, 10000);
+    }, type == 'success' ? 4000 : 10000);
   }
 
   private attachCopyButtonsListeners() {
@@ -3068,7 +4283,59 @@ class ConfigManager {
   }
 
   private handleReset(resetType: string) {
-    if (resetType.startsWith('path-')) {
+    if (resetType.startsWith('custom-path-')) {
+      // Resetar path params para custom endpoints - formato: custom-path-{endpointId}
+      const endpointId = resetType.replace('custom-path-', '');
+      const testBtn = document.querySelector(`.test-btn[data-endpoint-id="${endpointId}"]`) as HTMLButtonElement;
+      
+      if (testBtn) {
+        const method = testBtn.dataset.method;
+        const pathId = testBtn.dataset.pathId;
+        const endpointElement = document.getElementById(`endpoint-${method}-${pathId}`) as HTMLElement;
+        
+        if (endpointElement) {
+          const pathInputs = endpointElement.querySelectorAll('.path-param-input');
+          pathInputs.forEach(input => {
+            (input as HTMLInputElement).value = '';
+          });
+        }
+      }
+    } else if (resetType.startsWith('custom-query-')) {
+      // Resetar query params para custom endpoints - formato: custom-query-{endpointId}
+      const endpointId = resetType.replace('custom-query-', '');
+      const testBtn = document.querySelector(`.test-btn[data-endpoint-id="${endpointId}"]`) as HTMLButtonElement;
+      
+      if (testBtn) {
+        const method = testBtn.dataset.method;
+        const pathId = testBtn.dataset.pathId;
+        const endpointElement = document.getElementById(`endpoint-${method}-${pathId}`) as HTMLElement;
+        
+        if (endpointElement) {
+          const queryInputs = endpointElement.querySelectorAll('.query-param-input');
+          queryInputs.forEach(input => {
+            const htmlInput = input as HTMLInputElement;
+            const defaultValue = htmlInput.dataset.default || '';
+            htmlInput.value = defaultValue;
+          });
+        }
+      }
+    } else if (resetType.startsWith('custom-body-')) {
+      // Resetar body para custom endpoints - formato: custom-body-{endpointId}
+      const endpointId = resetType.replace('custom-body-', '');
+      const testBtn = document.querySelector(`.test-btn[data-endpoint-id="${endpointId}"]`) as HTMLButtonElement;
+      
+      if (testBtn) {
+        const method = testBtn.dataset.method;
+        const pathId = testBtn.dataset.pathId;
+        const bodyTextarea = document.getElementById(`body-${method}-${pathId}`) as HTMLTextAreaElement;
+        
+        if (bodyTextarea) {
+          const bodyKey = `${method}-${pathId}`;
+          const defaultBody = this.defaultBodyValues.get(bodyKey) || '';
+          bodyTextarea.value = defaultBody;
+        }
+      }
+    } else if (resetType.startsWith('path-')) {
       // Resetar path params - formato: path-{method}-{pathId}
       const parts = resetType.split('-');
       const method = parts[1];
@@ -3294,6 +4561,10 @@ class ConfigManager {
       .replace(/:/g, '___')                   // Transforma : em ___ (para portas)
       .replace(/_{2,}/g, '__')                // Normaliza múltiplos underscores
       .replace(/___+/g, '___');              // Normaliza múltiplos :___
+  }
+
+  private normalizePath(path: string): string {
+    return path.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   }
 }
 

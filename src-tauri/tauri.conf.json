@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenAPIUI",
+  "productName": "EasyOpenAPI",
   "version": "0.1.8",
-  "identifier": "com.openapiui.openapiui",
+  "identifier": "com.easyopenapi.easyopenapi",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "OpenAPIUI",
+        "title": "easyopenapi",
         "width": 1200,
         "height": 800
       }

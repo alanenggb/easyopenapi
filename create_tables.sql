@@ -29,9 +29,26 @@ CREATE TABLE IF NOT EXISTS test_results (
     user_account VARCHAR(255)
 );
 
+-- Tabela para armazenar endpoints customizados
+CREATE TABLE IF NOT EXISTS custom_endpoints (
+    id VARCHAR(255) PRIMARY KEY,
+    config_id VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    base_url VARCHAR(500) NOT NULL,
+    endpoint_path VARCHAR(500) NOT NULL,
+    method VARCHAR(10) NOT NULL,
+    query_params JSONB,
+    example_body TEXT,
+    example_result TEXT,
+    created_by VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Índices para performance das consultas
 CREATE INDEX IF NOT EXISTS idx_value_sets_config_endpoint ON value_sets (config_id, endpoint_method, endpoint_path);
 CREATE INDEX IF NOT EXISTS idx_test_results_config_endpoint ON test_results (config_id, endpoint_method, endpoint_path);
+CREATE INDEX IF NOT EXISTS idx_custom_endpoints_config_id ON custom_endpoints (config_id);
 
 -- Índices únicos para evitar duplicatas de nomes dentro do mesmo endpoint
 -- Isso permite que o sistema substitua um registro existente com o mesmo nome
@@ -39,9 +56,14 @@ CREATE INDEX IF NOT EXISTS idx_test_results_config_endpoint ON test_results (con
 CREATE UNIQUE INDEX IF NOT EXISTS idx_value_sets_unique_name ON value_sets (name, config_id, endpoint_method, endpoint_path);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_test_results_unique_name ON test_results (name, config_id, endpoint_method, endpoint_path);
 
+-- Índice único para garantir que endpoints customizados não sejam duplicados
+-- Unicidade baseada em config_id + base_url + endpoint_path + method
+CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_endpoints_unique ON custom_endpoints (config_id, base_url, endpoint_path, method);
+
 -- Comentários sobre os índices únicos
 COMMENT ON INDEX idx_value_sets_unique_name IS 'Garante nomes únicos para value sets dentro do mesmo endpoint';
 COMMENT ON INDEX idx_test_results_unique_name IS 'Garante nomes únicos para test results dentro do mesmo endpoint';
+COMMENT ON INDEX idx_custom_endpoints_unique IS 'Garante unicidade de endpoints customizados por config_id + base_url + endpoint_path + method';
 
 -- Índices adicionais para buscas comuns
 CREATE INDEX IF NOT EXISTS idx_value_sets_created_at ON value_sets (created_at DESC);
@@ -52,6 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_test_results_user_account ON test_results (user_a
 -- Comentários para documentação
 COMMENT ON TABLE value_sets IS 'Conjuntos de valores salvos para endpoints da API';
 COMMENT ON TABLE test_results IS 'Resultados de testes executados nos endpoints da API';
+COMMENT ON TABLE custom_endpoints IS 'Endpoints customizados definidos pelo usuário para configurações sem URL OpenAPI';
 
 COMMENT ON COLUMN value_sets.id IS 'Identificador único do conjunto de valores';
 COMMENT ON COLUMN value_sets.name IS 'Nome descritivo do conjunto';
@@ -73,3 +96,16 @@ COMMENT ON COLUMN test_results.request_data IS 'Dados completos da requisição 
 COMMENT ON COLUMN test_results.response_data IS 'Dados completos da resposta em JSON';
 COMMENT ON COLUMN test_results.timestamp IS 'Data/hora da execução do teste';
 COMMENT ON COLUMN test_results.user_account IS 'Conta do usuário que executou';
+
+COMMENT ON COLUMN custom_endpoints.id IS 'Identificador único do endpoint customizado';
+COMMENT ON COLUMN custom_endpoints.config_id IS 'ID da configuração da API';
+COMMENT ON COLUMN custom_endpoints.name IS 'Nome descritivo do endpoint';
+COMMENT ON COLUMN custom_endpoints.description IS 'Descrição detalhada do endpoint';
+COMMENT ON COLUMN custom_endpoints.base_url IS 'URL base do endpoint (obrigatório pois config não tem URL)';
+COMMENT ON COLUMN custom_endpoints.endpoint_path IS 'Caminho do endpoint (ex: /users/{userId})';
+COMMENT ON COLUMN custom_endpoints.method IS 'Método HTTP (GET, POST, etc)';
+COMMENT ON COLUMN custom_endpoints.query_params IS 'Parâmetros de query em formato JSON';
+COMMENT ON COLUMN custom_endpoints.example_body IS 'Exemplo de corpo da requisição em JSON';
+COMMENT ON COLUMN custom_endpoints.example_result IS 'Exemplo de resposta para documentação';
+COMMENT ON COLUMN custom_endpoints.created_by IS 'Conta do usuário que criou o endpoint';
+COMMENT ON COLUMN custom_endpoints.created_at IS 'Data de criação do endpoint';

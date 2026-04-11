@@ -47,7 +47,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: openapiui-v__VERSION__
-          releaseName: "OpenAPIUI v__VERSION__"
+          tagName: easyopenapi-v__VERSION__
+          releaseName: "EasyOpenAPI v__VERSION__"
           releaseDraft: true
           prerelease: false

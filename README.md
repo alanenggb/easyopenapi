@@ -44,28 +44,28 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 ## 📸 Screenshots
 
 ### Configuração da API
-![Configuração da API](images/openapiui_config_edit.png)
+![Configuração da API](images/easyopenapi_config_edit.png)
 
 ### OpenAPI Carregado
 O aplicativo carrega a especificação OpenAPI da URL configurada + '/openapi.json'
-![OpenAPI Carregado](images/openapiui_loaded_openapi.png)
+![OpenAPI Carregado](images/easyopenapi_loaded_openapi.png)
 
 ### Valores de teste salvos
 O usuário pode salvar valores de teste para reutilização futura
-![Valores de teste salvos](images/openapiui_test_and_save_body.png)
+![Valores de teste salvos](images/easyopenapi_test_and_save_body.png)
 
 ### Resultado Salvo
 O retorno da API também pode ser salvo para visualização posterior
-![Resultado Salvo](images/openapiui_test_save_result.png)
+![Resultado Salvo](images/easyopenapi_test_save_result.png)
 
 Opção de busca de texto no resultado
-![Resultado Salvo](images/openapiui_busca_valores_no_resultado.png)
+![Resultado Salvo](images/easyopenapi_busca_valores_no_resultado.png)
 
 ### Histórico de Resultados
 O usuário pode visualizar o histórico de testes salvos, com filtro de endpoint, e buscar por substring no texto da resposta
-![Histórico de Resultados](images/openapiui_view_saved_results.png)
+![Histórico de Resultados](images/easyopenapi_view_saved_results.png)
 
-![Busca no Histórico](images/openapiui_busca_historico.png)
+![Busca no Histórico](images/easyopenapi_busca_historico.png)
 
 ## 🛠️ Tecnologias
 
@@ -121,8 +121,8 @@ O aplicativo utiliza armazenamento nativo do Tauri (app_data_dir) para persistê
 
 ```bash
 # Clonar o repositório
-git clone https://github.com/alanenggb/openapiui.git
-cd openapiui
+git clone https://github.com/alanenggb/easyopenapi.git
+cd easyopenapi
 
 # Instalar dependências
 npm install

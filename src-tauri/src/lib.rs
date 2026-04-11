@@ -47,6 +47,30 @@ struct TestResultRecord {
     user_account: String,
 }
 
+#[derive(Debug, Deserialize, Clone, Serialize)]
+struct QueryParam {
+    name: String,
+    #[serde(rename = "type")]
+    param_type: String,
+    required: bool,
+    default: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Serialize)]
+struct CustomEndpoint {
+    id: String,
+    config_id: String,
+    name: String,
+    description: Option<String>,
+    base_url: String,
+    endpoint_path: String,
+    method: String,
+    query_params: Vec<QueryParam>,
+    example_body: Option<String>,
+    example_result: Option<String>,
+    created_by: String,
+}
+
 // Cache de conexões PostgreSQL
 #[derive(Clone)]
 struct PostgresConnectionCache {
@@ -657,6 +681,33 @@ async fn create_postgres_tables(secret_name: String, connection_cache: tauri::St
         .await
         .map_err(|e| format!("Failed to create test_results index: {}", e))?;
     
+    // Criar tabela de custom endpoints
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS custom_endpoints (
+            id VARCHAR(255) PRIMARY KEY,
+            config_id VARCHAR(255) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            base_url VARCHAR(500) NOT NULL,
+            endpoint_path VARCHAR(500) NOT NULL,
+            method VARCHAR(10) NOT NULL,
+            query_params JSONB,
+            example_body TEXT,
+            example_result TEXT,
+            created_by VARCHAR(255) NOT NULL,
+            UNIQUE (config_id, base_url, endpoint_path, method)
+        )
+    "#)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to create custom_endpoints table: {}", e))?;
+    
+    // Criar índice para custom endpoints
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_custom_endpoints_config_id ON custom_endpoints (config_id)")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to create custom_endpoints index: {}", e))?;
+    
     Ok("PostgreSQL tables created successfully".to_string())
 }
 
@@ -732,25 +783,44 @@ async fn save_value_set_to_postgres(
 async fn list_postgres_value_sets(
     secret_name: String,
     config_id: String,
+    endpoint_method: Option<String>,
+    endpoint_path: Option<String>,
     connection_cache: tauri::State<'_, PostgresConnectionCache>,
     config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<Vec<serde_json::Value>, String> {
     // Conectar ao PostgreSQL
     let config = get_postgres_config(secret_name, config_cache).await?;
     let pool = connection_cache.get_connection(&config).await?;
-    
-    // Buscar value sets do banco
-    let rows = sqlx::query(r#"
-        SELECT id, name, config_id, endpoint_method, endpoint_path, 
-               path_params, query_params, body, created_at, user_account
-        FROM value_sets 
-        WHERE config_id = $1
-        ORDER BY created_at DESC
-    "#)
-    .bind(&config_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| format!("Failed to fetch value sets from PostgreSQL: {}", e))?;
+
+    // Construir query com filtros opcionais
+    let query = if endpoint_method.is_some() && endpoint_path.is_some() {
+        let method = endpoint_method.as_ref().unwrap();
+        let path = endpoint_path.as_ref().unwrap();
+        sqlx::query(r#"
+            SELECT id, name, config_id, endpoint_method, endpoint_path,
+                   path_params, query_params, body, created_at, user_account
+            FROM value_sets
+            WHERE config_id = $1 AND endpoint_method = $2 AND endpoint_path = $3
+            ORDER BY created_at DESC
+        "#)
+        .bind(&config_id)
+        .bind(method)
+        .bind(path)
+    } else {
+        sqlx::query(r#"
+            SELECT id, name, config_id, endpoint_method, endpoint_path,
+                   path_params, query_params, body, created_at, user_account
+            FROM value_sets
+            WHERE config_id = $1
+            ORDER BY created_at DESC
+        "#)
+        .bind(&config_id)
+    };
+
+    let rows = query
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to fetch value sets from PostgreSQL: {}", e))?;
     
     let mut results: Vec<serde_json::Value> = Vec::new();
     for row in rows {
@@ -859,6 +929,9 @@ async fn list_postgres_results(
     
     let mut results: Vec<serde_json::Value> = Vec::new();
     for row in rows {
+        let request_data: Option<serde_json::Value> = row.try_get("request_data").unwrap_or(None);
+        let response_data: Option<serde_json::Value> = row.try_get("response_data").unwrap_or(None);
+        
         let result = serde_json::json!({
             "id": row.get::<String, &str>("id"),
             "name": row.get::<String, &str>("name"),
@@ -867,8 +940,8 @@ async fn list_postgres_results(
                 "path": row.get::<String, &str>("endpoint_path"),
                 "configId": row.get::<String, &str>("config_id")
             },
-            "request": row.get::<serde_json::Value, &str>("request_data"),
-            "response": row.get::<serde_json::Value, &str>("response_data"),
+            "request": request_data.unwrap_or(serde_json::json!(null)),
+            "response": response_data.unwrap_or(serde_json::json!(null)),
             "timestamp": row.get::<chrono::DateTime<chrono::Utc>, &str>("timestamp").to_rfc3339(),
             "userAccount": row.get::<String, &str>("user_account"),
             "storageLocation": "database"
@@ -1098,6 +1171,47 @@ async fn get_app_version() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn load_value_set_from_postgres(
+    secret_name: String,
+    config_id: String,
+    value_set_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+) -> Result<serde_json::Value, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+
+    // Buscar value set específico por ID
+    let row = sqlx::query(
+        r#"SELECT id, name, config_id, endpoint_method, endpoint_path, path_params, query_params, body, created_at, user_account 
+         FROM value_sets 
+         WHERE id = $1 AND config_id = $2"#
+    )
+    .bind(&value_set_id)
+    .bind(&config_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| format!("Failed to fetch value set from PostgreSQL: {}", e))?;
+
+    let value_set = serde_json::json!({
+        "id": row.get::<String, &str>("id"),
+        "name": row.get::<String, &str>("name"),
+        "configId": row.get::<String, &str>("config_id"),
+        "endpoint": {
+            "method": row.get::<String, &str>("endpoint_method"),
+            "path": row.get::<String, &str>("endpoint_path")
+        },
+        "pathParams": row.get::<serde_json::Value, &str>("path_params"),
+        "queryParams": row.get::<serde_json::Value, &str>("query_params"),
+        "body": row.get::<String, &str>("body"),
+        "createdAt": row.get::<chrono::DateTime<chrono::Utc>, &str>("created_at").to_rfc3339(),
+        "userAccount": row.get::<String, &str>("user_account")
+    });
+
+    Ok(value_set)
+}
+
+#[tauri::command]
 async fn delete_value_set_from_postgres(secret_name: String, config_id: String, method: String, path: String, value_set_id: String, user_account: String, connection_cache: tauri::State<'_, PostgresConnectionCache>, config_cache: tauri::State<'_, PostgresConfigCache>) -> Result<bool, String> {
     let config = get_postgres_config(secret_name, config_cache).await?;
     let pool = connection_cache.get_connection(&config).await?;
@@ -1188,6 +1302,518 @@ async fn delete_test_result_from_postgres(secret_name: String, config_id: String
     Ok(result.rows_affected() > 0)
 }
 
+#[tauri::command]
+async fn save_custom_endpoint(
+    config_id: String,
+    endpoint_data: serde_json::Value,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    // Extrair dados do endpoint
+    let name = endpoint_data.get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Name is required")?
+        .to_string();
+    
+    let base_url = endpoint_data.get("base_url")
+        .and_then(|v| v.as_str())
+        .ok_or("Base URL is required")?
+        .to_string();
+    
+    let endpoint_path = endpoint_data.get("endpoint_path")
+        .and_then(|v| v.as_str())
+        .ok_or("Endpoint path is required")?
+        .to_string();
+    
+    let method = endpoint_data.get("method")
+        .and_then(|v| v.as_str())
+        .ok_or("Method is required")?
+        .to_string();
+    
+    let description = endpoint_data.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let query_params = endpoint_data.get("query_params").cloned().unwrap_or(serde_json::json!([]));
+    let example_body = endpoint_data.get("example_body").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let example_result = endpoint_data.get("example_result").and_then(|v| v.as_str()).map(|s| s.to_string());
+    
+    // Obter conta do usuário
+    let created_by = get_gcloud_account().await.unwrap_or_else(|_| "unknown".to_string());
+    
+    let new_uuid = uuid::Uuid::new_v4().to_string();
+    let endpoint_id = endpoint_data.get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&new_uuid)
+        .to_string();
+    
+    // Verificar se config tem databaseName para decidir onde salvar
+    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+    let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+    let config = configs.iter()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    
+    let database_name = config
+        .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
+        .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())));
+    
+    if let Some(db_name) = database_name {
+        // Salvar no banco de dados
+        let pg_config = get_postgres_config(db_name.to_string(), config_cache).await?;
+        let pool = connection_cache.get_connection(&pg_config).await?;
+        
+        // Verificar duplicidade
+        let existing = sqlx::query(
+            r#"SELECT id FROM custom_endpoints 
+             WHERE config_id = $1 AND base_url = $2 AND endpoint_path = $3 AND method = $4"#
+        )
+        .bind(&config_id)
+        .bind(&base_url)
+        .bind(&endpoint_path)
+        .bind(&method)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| format!("Failed to check for duplicate endpoint: {}", e))?;
+        
+        if existing.is_some() {
+            return Err("Já existe um endpoint com a mesma combinação de base_url, endpoint_path e method nesta configuração.".to_string());
+        }
+        
+        sqlx::query(r#"
+            INSERT INTO custom_endpoints (id, config_id, name, description, base_url, endpoint_path, method, query_params, example_body, example_result, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "#)
+        .bind(&endpoint_id)
+        .bind(&config_id)
+        .bind(&name)
+        .bind(&description)
+        .bind(&base_url)
+        .bind(&endpoint_path)
+        .bind(&method)
+        .bind(&query_params)
+        .bind(&example_body)
+        .bind(&example_result)
+        .bind(&created_by)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to save custom endpoint to PostgreSQL: {}", e))?;
+    } else {
+        // Salvar localmente
+        let endpoints_data = load_app_data_sync(&app, "openapiui-custom-endpoints")?;
+        let mut endpoints: serde_json::Value = if endpoints_data.is_null() {
+            serde_json::json!({})
+        } else {
+            endpoints_data
+        };
+        
+        let config_id_clone = config_id.clone();
+        let config_endpoints = if let Some(arr) = endpoints.get_mut(&config_id_clone).and_then(|v| v.as_array_mut()) {
+            arr
+        } else {
+            endpoints[&config_id_clone] = serde_json::json!([]);
+            endpoints.get_mut(&config_id_clone).and_then(|v| v.as_array_mut()).unwrap()
+        };
+        
+        // Verificar duplicidade
+        for endpoint in config_endpoints.iter() {
+            if endpoint.get("base_url").and_then(|v| v.as_str()) == Some(&base_url)
+                && endpoint.get("endpoint_path").and_then(|v| v.as_str()) == Some(&endpoint_path)
+                && endpoint.get("method").and_then(|v| v.as_str()) == Some(&method)
+            {
+                return Err("Já existe um endpoint com a mesma combinação de base_url, endpoint_path e method nesta configuração.".to_string());
+            }
+        }
+        
+        let new_endpoint = serde_json::json!({
+            "id": endpoint_id,
+            "config_id": config_id,
+            "name": name,
+            "description": description,
+            "base_url": base_url,
+            "endpoint_path": endpoint_path,
+            "method": method,
+            "query_params": query_params,
+            "example_body": example_body,
+            "example_result": example_result,
+            "created_by": created_by
+        });
+        
+        config_endpoints.push(new_endpoint);
+        
+        save_app_data_sync(&app, "openapiui-custom-endpoints", endpoints)?;
+    }
+    
+    Ok(endpoint_id)
+}
+
+#[tauri::command]
+async fn list_custom_endpoints(
+    config_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+    app: tauri::AppHandle,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut all_endpoints: Vec<serde_json::Value> = vec![];
+    
+    // Verificar se config tem databaseName
+    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+    let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+    let config = configs.iter()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    
+    let database_name = config
+        .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
+        .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())));
+    
+    if let Some(db_name) = database_name {
+        // Carregar do banco de dados
+        let pg_config = get_postgres_config(db_name.to_string(), config_cache).await?;
+        let pool = connection_cache.get_connection(&pg_config).await?;
+        
+        let rows = sqlx::query(
+            r#"SELECT id, config_id, name, description, base_url, endpoint_path, method, query_params, example_body, example_result, created_by
+             FROM custom_endpoints 
+             WHERE config_id = $1"#
+        )
+        .bind(&config_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to fetch custom endpoints from PostgreSQL: {}", e))?;
+        
+        for row in rows {
+            let endpoint = serde_json::json!({
+                "id": row.get::<String, &str>("id"),
+                "config_id": row.get::<String, &str>("config_id"),
+                "name": row.get::<String, &str>("name"),
+                "description": row.get::<Option<String>, &str>("description"),
+                "base_url": row.get::<String, &str>("base_url"),
+                "endpoint_path": row.get::<String, &str>("endpoint_path"),
+                "method": row.get::<String, &str>("method"),
+                "query_params": row.get::<serde_json::Value, &str>("query_params"),
+                "example_body": row.get::<Option<String>, &str>("example_body"),
+                "example_result": row.get::<Option<String>, &str>("example_result"),
+                "created_by": row.get::<String, &str>("created_by")
+            });
+            all_endpoints.push(endpoint);
+        }
+    }
+    
+    // Carregar do armazenamento local
+    let endpoints_data = load_app_data_sync(&app, "openapiui-custom-endpoints")?;
+    if !endpoints_data.is_null() {
+        if let Some(config_endpoints) = endpoints_data.get(&config_id).and_then(|v| v.as_array()) {
+            all_endpoints.extend(config_endpoints.clone());
+        }
+    }
+    
+    Ok(all_endpoints)
+}
+
+#[tauri::command]
+async fn delete_custom_endpoint(
+    config_id: String,
+    endpoint_id: String,
+    current_user: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    // Verificar se config tem databaseName
+    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+    let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+    let config = configs.iter()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    
+    let database_name = config
+        .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
+        .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())));
+    
+    let mut deleted = false;
+    
+    if let Some(db_name) = database_name {
+        // Deletar do banco de dados
+        let pg_config = get_postgres_config(db_name.to_string(), config_cache).await?;
+        let pool = connection_cache.get_connection(&pg_config).await?;
+        
+        // Verificar se o usuário é o criador
+        let row = sqlx::query(
+            r#"SELECT id, created_by FROM custom_endpoints 
+             WHERE id = $1 AND config_id = $2"#
+        )
+        .bind(&endpoint_id)
+        .bind(&config_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| format!("Failed to fetch custom endpoint: {}", e))?;
+        
+        if let Some(row) = row {
+            let created_by = row.get::<String, &str>("created_by");
+            if created_by != current_user {
+                return Err("Você não tem permissão para excluir este endpoint.".to_string());
+            }
+            
+            let result = sqlx::query("DELETE FROM custom_endpoints WHERE id = $1")
+                .bind(&endpoint_id)
+                .execute(&pool)
+                .await
+                .map_err(|e| format!("Failed to delete custom endpoint: {}", e))?;
+            
+            deleted = result.rows_affected() > 0;
+        }
+    }
+    
+    // Deletar do armazenamento local
+    let mut endpoints_data = load_app_data_sync(&app, "openapiui-custom-endpoints")?;
+    if !endpoints_data.is_null() {
+        if let Some(config_endpoints) = endpoints_data.get_mut(&config_id) {
+            if let Some(endpoints_array) = config_endpoints.as_array_mut() {
+                let original_len = endpoints_array.len();
+                endpoints_array.retain(|endpoint| {
+                    endpoint.get("id").and_then(|v| v.as_str()) != Some(&endpoint_id)
+                        || endpoint.get("created_by").and_then(|v| v.as_str()) != Some(&current_user)
+                });
+                
+                if endpoints_array.len() < original_len {
+                    deleted = true;
+                    save_app_data_sync(&app, "openapiui-custom-endpoints", endpoints_data)?;
+                }
+            }
+        }
+    }
+    
+    Ok(deleted)
+}
+
+#[tauri::command]
+async fn update_custom_endpoint(
+    config_id: String,
+    endpoint_id: String,
+    endpoint_data: serde_json::Value,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let base_url = endpoint_data.get("base_url")
+        .and_then(|v| v.as_str())
+        .ok_or("Base URL is required")?
+        .to_string();
+    
+    let endpoint_path = endpoint_data.get("endpoint_path")
+        .and_then(|v| v.as_str())
+        .ok_or("Endpoint path is required")?
+        .to_string();
+    
+    let method = endpoint_data.get("method")
+        .and_then(|v| v.as_str())
+        .ok_or("Method is required")?
+        .to_string();
+    
+    // Verificar se config tem databaseName
+    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+    let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+    let config = configs.iter()
+        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    
+    let database_name = config
+        .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
+        .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())));
+    
+    if let Some(db_name) = database_name {
+        // Atualizar no banco de dados
+        let pg_config = get_postgres_config(db_name.to_string(), config_cache).await?;
+        let pool = connection_cache.get_connection(&pg_config).await?;
+        
+        // Verificar duplicidade (excluindo o endpoint atual)
+        let existing = sqlx::query(
+            r#"SELECT id FROM custom_endpoints 
+             WHERE config_id = $1 AND base_url = $2 AND endpoint_path = $3 AND method = $4 AND id != $5"#
+        )
+        .bind(&config_id)
+        .bind(&base_url)
+        .bind(&endpoint_path)
+        .bind(&method)
+        .bind(&endpoint_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| format!("Failed to check for duplicate endpoint: {}", e))?;
+        
+        if existing.is_some() {
+            return Err("Já existe um endpoint com a mesma combinação de base_url, endpoint_path e method nesta configuração.".to_string());
+        }
+        
+        sqlx::query(r#"
+            UPDATE custom_endpoints
+            SET name = $1, description = $2, base_url = $3, endpoint_path = $4, method = $5, 
+                query_params = $6, example_body = $7, example_result = $8
+            WHERE id = $9 AND config_id = $10
+        "#)
+        .bind(endpoint_data.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+        .bind(endpoint_data.get("description").and_then(|v| v.as_str()))
+        .bind(&base_url)
+        .bind(&endpoint_path)
+        .bind(&method)
+        .bind(endpoint_data.get("query_params").cloned().unwrap_or(serde_json::json!([])))
+        .bind(endpoint_data.get("example_body").and_then(|v| v.as_str()))
+        .bind(endpoint_data.get("example_result").and_then(|v| v.as_str()))
+        .bind(&endpoint_id)
+        .bind(&config_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to update custom endpoint: {}", e))?;
+    } else {
+        // Atualizar no armazenamento local
+        let mut endpoints_data = load_app_data_sync(&app, "openapiui-custom-endpoints")?;
+        if !endpoints_data.is_null() {
+            if let Some(config_endpoints) = endpoints_data.get_mut(&config_id) {
+                if let Some(endpoints_array) = config_endpoints.as_array_mut() {
+                    // Verificar duplicidade com outros endpoints (coletar antes de mutar)
+                    let has_duplicate = endpoints_array.iter().any(|other| {
+                        other.get("id").and_then(|v| v.as_str()) != Some(&endpoint_id)
+                            && other.get("base_url").and_then(|v| v.as_str()) == Some(&base_url)
+                            && other.get("endpoint_path").and_then(|v| v.as_str()) == Some(&endpoint_path)
+                            && other.get("method").and_then(|v| v.as_str()) == Some(&method)
+                    });
+                    
+                    if has_duplicate {
+                        return Err("Já existe um endpoint com a mesma combinação de base_url, endpoint_path e method nesta configuração.".to_string());
+                    }
+                    
+                    for endpoint in endpoints_array.iter_mut() {
+                        if endpoint.get("id").and_then(|v| v.as_str()) == Some(&endpoint_id) {
+                            // Atualizar campos
+                            if let Some(name) = endpoint_data.get("name").and_then(|v| v.as_str()) {
+                                endpoint["name"] = serde_json::Value::String(name.to_string());
+                            }
+                            if let Some(desc) = endpoint_data.get("description").and_then(|v| v.as_str()) {
+                                endpoint["description"] = serde_json::Value::String(desc.to_string());
+                            }
+                            endpoint["base_url"] = serde_json::Value::String(base_url.clone());
+                            endpoint["endpoint_path"] = serde_json::Value::String(endpoint_path.clone());
+                            endpoint["method"] = serde_json::Value::String(method.clone());
+                            if let Some(qp) = endpoint_data.get("query_params") {
+                                endpoint["query_params"] = qp.clone();
+                            }
+                            if let Some(eb) = endpoint_data.get("example_body").and_then(|v| v.as_str()) {
+                                endpoint["example_body"] = serde_json::Value::String(eb.to_string());
+                            }
+                            if let Some(er) = endpoint_data.get("example_result").and_then(|v| v.as_str()) {
+                                endpoint["example_result"] = serde_json::Value::String(er.to_string());
+                            }
+                            
+                            save_app_data_sync(&app, "openapiui-custom-endpoints", endpoints_data)?;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(endpoint_id)
+}
+
+#[tauri::command]
+async fn delete_config(
+    config_id: String,
+    current_user: String,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+    let mut configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+    
+    let config_index = configs.iter()
+        .position(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    
+    if let Some(index) = config_index {
+        let config = &configs[index];
+        
+        // Verificar se o usuário é o criador (ou se não há created_by para backward compatibility)
+        let created_by = config.get("created_by").and_then(|v| v.as_str());
+        if let Some(creator) = created_by {
+            if creator != current_user {
+                return Err("Você não tem permissão para excluir esta configuração.".to_string());
+            }
+        }
+        
+        configs.remove(index);
+        
+        let new_config_data = serde_json::to_value(&configs).unwrap();
+        save_app_data_sync(&app, "openapiui-configurations", new_config_data)?;
+        
+        Ok(true)
+    } else {
+        Err("Configuração não encontrada.".to_string())
+    }
+}
+
+// Helper functions for app data sync
+fn load_app_data_sync(app: &tauri::AppHandle, key: &str) -> Result<serde_json::Value, String> {
+    use tauri_plugin_store::StoreBuilder;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx = Arc::new(Mutex::new(tx));
+    let app_handle = app.clone();
+    let key = key.to_string();
+    
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            let store = StoreBuilder::new(&app_handle, std::path::PathBuf::from("app-data.json")).build();
+            match store {
+                Ok(s) => {
+                    let data = s.get(&key);
+                    Ok(data)
+                }
+                Err(e) => Err(format!("Failed to load store: {:?}", e))
+            }
+        });
+        
+        let _ = tx.lock().unwrap().send(result);
+    });
+    
+    let result = rx.recv_timeout(Duration::from_secs(5))
+        .map_err(|e| format!("Timeout loading app data: {}", e))?;
+    
+    match result {
+        Ok(Some(data)) => Ok(data),
+        Ok(None) => Ok(serde_json::Value::Null),
+        Err(e) => Err(format!("Error loading app data: {:?}", e)),
+    }
+}
+
+fn save_app_data_sync(app: &tauri::AppHandle, key: &str, value: serde_json::Value) -> Result<(), String> {
+    use tauri_plugin_store::StoreBuilder;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx = Arc::new(Mutex::new(tx));
+    let app_handle = app.clone();
+    let key = key.to_string();
+    
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            let mut store = StoreBuilder::new(&app_handle, std::path::PathBuf::from("app-data.json")).build();
+            match store {
+                Ok(ref mut s) => {
+                    s.set(&key, value);
+                    let _ = s.save();
+                    Ok(())
+                }
+                Err(e) => Err(format!("Failed to load store: {:?}", e))
+            }
+        });
+        
+        let _ = tx.lock().unwrap().send(result);
+    });
+    
+    let result = rx.recv_timeout(Duration::from_secs(5))
+        .map_err(|e| format!("Timeout saving app data: {}", e))?;
+    
+    result
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1270,8 +1896,14 @@ pub fn run() {
             list_postgres_results, 
             save_value_set_to_postgres, 
             list_postgres_value_sets,
+            load_value_set_from_postgres,
             delete_value_set_from_postgres,
-            delete_test_result_from_postgres
+            delete_test_result_from_postgres,
+            save_custom_endpoint,
+            list_custom_endpoints,
+            delete_custom_endpoint,
+            update_custom_endpoint,
+            delete_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
