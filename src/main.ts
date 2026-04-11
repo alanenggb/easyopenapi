@@ -10,6 +10,8 @@ interface Configuration {
   databaseName?: string;
   gcpSecretName?: string; // Para compatibilidade com configurações salvas antigas
   created_by?: string; // Track creator for deletion permissions
+  isPrivate?: boolean; // NEW - default true for new configs
+  isInDatabase?: boolean; // NEW - tracks if config exists in DB
 }
 
 interface CustomEndpoint {
@@ -102,6 +104,7 @@ class ConfigManager {
   private readonly APP_VERSION = '0.1.9'; // Versão atual do aplicativo
   private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
   private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
+  private pendingConfig: Configuration | null = null; // Configuração pendente de sincronização
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
@@ -109,6 +112,7 @@ class ConfigManager {
     urlInput: document.querySelector("#config-url") as HTMLInputElement,
     databaseInput: document.querySelector("#config-secret") as HTMLInputElement,
     authCheckbox: document.querySelector("#config-auth") as HTMLInputElement,
+    privateCheckbox: document.querySelector("#config-private") as HTMLInputElement,
     headersList: document.querySelector("#headers-list") as HTMLDivElement,
     addHeaderBtn: document.querySelector("#add-header-btn") as HTMLButtonElement,
     submitBtn: document.querySelector("#submit-btn") as HTMLButtonElement,
@@ -146,6 +150,13 @@ class ConfigManager {
     customEndpointId: document.querySelector("#custom-endpoint-id") as HTMLInputElement,
     customEndpointConfigId: document.querySelector("#custom-endpoint-config-id") as HTMLInputElement,
     customEndpointModalTitle: document.querySelector("#custom-endpoint-modal-title") as HTMLHeadingElement,
+    syncModal: document.querySelector("#sync-modal") as HTMLDivElement,
+    syncValueSetsCheckbox: document.querySelector("#sync-value-sets") as HTMLInputElement,
+    syncTestResultsCheckbox: document.querySelector("#sync-test-results") as HTMLInputElement,
+    syncCustomEndpointsCheckbox: document.querySelector("#sync-custom-endpoints") as HTMLInputElement,
+    confirmSyncBtn: document.querySelector("#confirm-sync-btn") as HTMLButtonElement,
+    cancelSyncBtn: document.querySelector("#cancel-sync-btn") as HTMLButtonElement,
+    closeSyncModalBtn: document.querySelector("#close-sync-modal") as HTMLButtonElement,
   };
 
   async init() {
@@ -249,6 +260,19 @@ class ConfigManager {
       this.hideCustomEndpointModal();
     });
 
+    // Sync modal event listeners
+    this.elements.confirmSyncBtn.addEventListener("click", () => {
+      this.handleSyncConfirm();
+    });
+
+    this.elements.cancelSyncBtn.addEventListener("click", () => {
+      this.handleSyncCancel();
+    });
+
+    this.elements.closeSyncModalBtn.addEventListener("click", () => {
+      this.hideSyncModal();
+    });
+
     this.elements.customEndpointForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       await this.handleCustomEndpointSubmit();
@@ -339,6 +363,13 @@ class ConfigManager {
                 gcpSecretName: undefined // Limpar campo antigo
               };
             }
+            // Default isPrivate to true for existing configs
+            if (config.isPrivate === undefined) {
+              return {
+                ...config,
+                isPrivate: true
+              };
+            }
             return config;
           });
           
@@ -364,6 +395,13 @@ class ConfigManager {
                 gcpSecretName: undefined
               };
             }
+            // Default isPrivate to true for existing configs
+            if (config.isPrivate === undefined) {
+              return {
+                ...config,
+                isPrivate: true
+              };
+            }
             return config;
           });
           
@@ -371,6 +409,38 @@ class ConfigManager {
           await this.saveConfigs();
         } else {
           this.configs = [];
+        }
+      }
+
+      // Load online configs from PostgreSQL for each unique databaseName
+      const uniqueDatabaseNames = new Set<string>();
+      this.configs.forEach(config => {
+        if (config.databaseName) {
+          uniqueDatabaseNames.add(config.databaseName);
+        }
+      });
+
+      for (const dbName of uniqueDatabaseNames) {
+        try {
+          const onlineConfigs = await invoke<any>('list_postgres_configs', { secretName: dbName });
+          if (onlineConfigs && Array.isArray(onlineConfigs)) {
+            // Merge online configs with local configs
+            onlineConfigs.forEach((onlineConfig: Configuration) => {
+              const existingIndex = this.configs.findIndex(c => c.id === onlineConfig.id);
+              if (existingIndex !== -1) {
+                // Update existing config with database info
+                this.configs[existingIndex].isInDatabase = true;
+                this.configs[existingIndex].isPrivate = onlineConfig.isPrivate;
+              } else {
+                // Add new config from database
+                onlineConfig.isInDatabase = true;
+                this.configs.push(onlineConfig);
+              }
+            });
+          }
+        } catch (error) {
+          console.error(`Failed to load online configs from database ${dbName}:`, error);
+          // Fallback to local configs only
         }
       }
     } catch (error) {
@@ -1351,6 +1421,7 @@ class ConfigManager {
             >
               Salvar Local
             </button>
+            ${config.databaseName && !config.isPrivate ? `
             <button
               class="save-set-database-btn save-custom-set-database-btn"
               data-endpoint-id="${endpoint.id}"
@@ -1358,6 +1429,8 @@ class ConfigManager {
               title="Salvar no banco de dados"
             >
               Salvar no banco de dados
+            </button>
+            ` : ''}
             </button>
           </div>
           <div class="load-set-controls">
@@ -1578,7 +1651,7 @@ class ConfigManager {
                   >
                     Salvar Local
                   </button>
-                  ${config.databaseName ? `
+                  ${config.databaseName && !config.isPrivate ? `
                     <button 
                       class="save-result-btn save-database-btn" 
                       data-method="${endpoint.method}"
@@ -1805,6 +1878,7 @@ class ConfigManager {
     const url = this.elements.urlInput.value.trim();
     const databaseName = this.elements.databaseInput.value.trim() || undefined;
     const useDefaultAuth = this.elements.authCheckbox.checked;
+    const isPrivate = this.elements.privateCheckbox.checked;
     const headers = this.getHeadersFromForm();
 
     if (!name) {
@@ -1814,6 +1888,38 @@ class ConfigManager {
 
     // Get current user for created_by
     const currentUser = await this.getCurrentUserName();
+
+    // Check if converting from private to non-private
+    let originalIsPrivate = true;
+    if (this.editingId) {
+      const existingConfig = this.configs.find(c => c.id === this.editingId);
+      if (existingConfig) {
+        originalIsPrivate = existingConfig.isPrivate !== false; // Default to true if undefined
+      }
+    }
+
+    // If converting from private to non-private
+    if (originalIsPrivate && !isPrivate) {
+      if (!databaseName) {
+        // No database secret configured - save locally and show alert
+        this.showToast('Para salvar configurações no banco de dados, configure um Secret GCP.', 'error');
+        // Continue with saving locally only
+      } else {
+        // Has database secret - show sync modal
+        this.pendingConfig = {
+          id: this.editingId || (url ? this.normalizeUrlToId(url) : this.generateUUID()),
+          name,
+          url: url || undefined,
+          databaseName,
+          useDefaultAuth,
+          headers,
+          isPrivate: false,
+          created_by: this.editingId ? this.configs.find(c => c.id === this.editingId)?.created_by || currentUser : currentUser
+        };
+        this.showSyncModal();
+        return; // Wait for sync modal confirmation
+      }
+    }
 
     if (this.editingId) {
       const configIndex = this.configs.findIndex(c => c.id === this.editingId);
@@ -1825,6 +1931,7 @@ class ConfigManager {
           databaseName,
           useDefaultAuth,
           headers,
+          isPrivate,
           created_by: this.configs[configIndex].created_by || currentUser
         };
       }
@@ -1839,12 +1946,33 @@ class ConfigManager {
         databaseName,
         useDefaultAuth,
         headers,
+        isPrivate: true, // Default to private for new configs
         created_by: currentUser
       };
       this.configs.push(newConfig);
     }
 
     await this.saveConfigs();
+
+    // If non-private and has databaseName, save to database
+    const configToSave = this.editingId 
+      ? this.configs.find(c => c.id === this.editingId)
+      : this.configs[this.configs.length - 1];
+    
+    if (configToSave && !configToSave.isPrivate && configToSave.databaseName) {
+      try {
+        await invoke('save_config_to_postgres', {
+          secretName: configToSave.databaseName,
+          configData: configToSave
+        });
+        configToSave.isInDatabase = true;
+        await this.saveConfigs();
+      } catch (error) {
+        console.error('Failed to save configuration to database:', error);
+        this.showToast(`Erro ao salvar configuração no banco: ${String(error)}`, 'error');
+        // Continue with local save only
+      }
+    }
     
     // Se a configuração atualizada for a que está selecionada, resetar a seleção
     const currentConfigId = this.getCurrentConfigId();
@@ -1875,29 +2003,63 @@ class ConfigManager {
       return;
     }
 
-    this.elements.configsList.innerHTML = this.configs.map(config => `
-      <div class="config-item" data-id="${config.id}">
-        <div class="config-details">
-          <h4>${this.escapeHtml(config.name)}</h4>
-          <p><strong>URL:</strong> ${config.url ? this.escapeHtml(config.url) : 'Configuração Customizada'}</p>
-          <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
-          ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
-          ${config.headers && config.headers.length > 0 ? `
-            <p><strong>Headers:</strong></p>
-            <div class="config-headers">
-              ${config.headers.map(header => 
-                `<span class="config-header">${this.escapeHtml(header.name)}: ${this.escapeHtml(header.value)}</span>`
-              ).join('')}
-            </div>
-          ` : ''}
-        </div>
-        <div class="config-actions">
-          <button class="edit-btn" data-id="${config.id}">Editar</button>
-          <button class="delete-btn" data-id="${config.id}">Excluir</button>
-        </div>
-      </div>
-    `).join('');
+    // Group configs by URL
+    const groupedConfigs = new Map<string, Configuration[]>();
+    this.configs.forEach(config => {
+      const url = config.url || 'custom';
+      if (!groupedConfigs.has(url)) {
+        groupedConfigs.set(url, []);
+      }
+      groupedConfigs.get(url)!.push(config);
+    });
 
+    let html = '';
+    groupedConfigs.forEach((configs, url) => {
+      const urlLabel = url === 'custom' ? 'Configurações Customizadas' : this.escapeHtml(url);
+      html += `
+        <div class="config-group">
+          <div class="config-group-header">
+            <h4>${urlLabel}</h4>
+          </div>
+      `;
+
+      configs.forEach(config => {
+        const statusBadge = config.isPrivate 
+          ? '<span class="config-status-badge private">Privada</span>' 
+          : config.isInDatabase 
+            ? '<span class="config-status-badge online">Online</span>' 
+            : '<span class="config-status-badge local">Local</span>';
+
+        html += `
+          <div class="config-item" data-id="${config.id}">
+            <div class="config-details">
+              <div class="config-title-row">
+                <h4>${this.escapeHtml(config.name)}</h4>
+                ${statusBadge}
+              </div>
+              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
+              ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
+              ${config.headers && config.headers.length > 0 ? `
+                <p><strong>Headers:</strong></p>
+                <div class="config-headers">
+                  ${config.headers.map(header => 
+                    `<span class="config-header">${this.escapeHtml(header.name)}: ${this.escapeHtml(header.value)}</span>`
+                  ).join('')}
+                </div>
+              ` : ''}
+            </div>
+            <div class="config-actions">
+              <button class="edit-btn" data-id="${config.id}">Editar</button>
+              <button class="delete-btn" data-id="${config.id}">Excluir</button>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+    });
+
+    this.elements.configsList.innerHTML = html;
     this.attachConfigEventListeners();
   }
 
@@ -1926,6 +2088,14 @@ class ConfigManager {
     this.elements.urlInput.value = config.url || '';
     this.elements.databaseInput.value = config.databaseName || '';
     this.elements.authCheckbox.checked = config.useDefaultAuth;
+    this.elements.privateCheckbox.checked = config.isPrivate !== false; // Default to true if undefined
+    
+    // Disable private checkbox if config is in database (cannot change back to private)
+    if (config.isInDatabase) {
+      this.elements.privateCheckbox.disabled = true;
+    } else {
+      this.elements.privateCheckbox.disabled = false;
+    }
     
     // Limpar campos de header existentes
     this.clearHeaderFields();
@@ -1941,6 +2111,126 @@ class ConfigManager {
     this.elements.cancelBtn.classList.remove('hidden');
     
     this.elements.nameInput.focus();
+  }
+
+  private showSyncModal() {
+    this.elements.syncModal.classList.remove('hidden');
+  }
+
+  private hideSyncModal() {
+    this.elements.syncModal.classList.add('hidden');
+    this.pendingConfig = null;
+  }
+
+  private async handleSyncConfirm() {
+    if (!this.pendingConfig || !this.pendingConfig.databaseName) {
+      this.showToast('Configuração pendente inválida', 'error');
+      this.hideSyncModal();
+      return;
+    }
+
+    const syncValueSets = this.elements.syncValueSetsCheckbox.checked;
+    const syncTestResults = this.elements.syncTestResultsCheckbox.checked;
+    const syncCustomEndpoints = this.elements.syncCustomEndpointsCheckbox.checked;
+
+    // Save configuration to database
+    try {
+      await invoke('save_config_to_postgres', {
+        secretName: this.pendingConfig.databaseName,
+        configData: this.pendingConfig
+      });
+      this.pendingConfig.isInDatabase = true;
+    } catch (error) {
+      console.error('Failed to save configuration to database:', error);
+      this.showToast(`Erro ao salvar configuração no banco: ${String(error)}`, 'error');
+      this.hideSyncModal();
+      return;
+    }
+
+    // Sync value sets if selected
+    if (syncValueSets) {
+      try {
+        const savedValueSets = await invoke<any>('load_app_data', { key: this.SAVED_SETS_KEY });
+        if (savedValueSets && Array.isArray(savedValueSets)) {
+          for (const valueSet of savedValueSets) {
+            if (valueSet.configId === this.pendingConfig?.id) {
+              await invoke('save_value_set_to_postgres', {
+                secretName: this.pendingConfig.databaseName,
+                configId: this.pendingConfig.id,
+                endpointMethod: valueSet.endpoint.method,
+                endpointPath: valueSet.endpoint.path,
+                valueSetData: valueSet
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to sync value sets:', error);
+        this.showToast(`Erro ao sincronizar value sets: ${String(error)}`, 'error');
+      }
+    }
+
+    // Sync test results if selected
+    if (syncTestResults) {
+      try {
+        const savedResults = await invoke<any>('load_app_data', { key: this.SAVED_RESULTS_KEY });
+        if (savedResults && Array.isArray(savedResults)) {
+          for (const result of savedResults) {
+            if (result.configId === this.pendingConfig?.id) {
+              await invoke('save_to_postgres', {
+                secretName: this.pendingConfig.databaseName,
+                configId: this.pendingConfig.id,
+                endpointMethod: result.endpoint.method,
+                endpointPath: result.endpoint.path,
+                resultData: result
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to sync test results:', error);
+        this.showToast(`Erro ao sincronizar resultados de testes: ${String(error)}`, 'error');
+      }
+    }
+
+    // Sync custom endpoints if selected
+    if (syncCustomEndpoints) {
+      try {
+        const customEndpoints = await invoke<any>('list_custom_endpoints', { configId: this.pendingConfig!.id });
+        if (customEndpoints && Array.isArray(customEndpoints)) {
+          for (const endpoint of customEndpoints) {
+            await invoke('save_custom_endpoint', {
+              configId: this.pendingConfig!.id,
+              endpointData: endpoint
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to sync custom endpoints:', error);
+        this.showToast(`Erro ao sincronizar endpoints customizados: ${String(error)}`, 'error');
+      }
+    }
+
+    // Update local config
+    const configIndex = this.configs.findIndex(c => c.id === this.pendingConfig!.id);
+    if (configIndex !== -1) {
+      this.configs[configIndex] = this.pendingConfig;
+      this.configs[configIndex].isInDatabase = true;
+    } else {
+      this.configs.push(this.pendingConfig);
+      this.configs[this.configs.length - 1].isInDatabase = true;
+    }
+
+    await this.saveConfigs();
+    this.updateConfigSelect();
+    this.renderConfigs();
+    this.resetForm();
+    this.hideSyncModal();
+    this.showToast('Configuração sincronizada com sucesso!', 'success');
+  }
+
+  private handleSyncCancel() {
+    this.hideSyncModal();
   }
 
   private async deleteConfig(id: string) {
@@ -3695,6 +3985,7 @@ class ConfigManager {
                     >
                       Salvar local
                     </button>
+                    ${config.databaseName && !config.isPrivate ? `
                     <button 
                       class="save-result-btn save-database-btn" 
                       data-method="${method}"
@@ -3706,6 +3997,7 @@ class ConfigManager {
                     >
                       Salvar no banco de dados
                     </button>
+                    ` : ''}
                   </div>
                   <button 
                     class="show-history-btn" 
@@ -3900,6 +4192,9 @@ class ConfigManager {
             >
               Salvar Local
             </button>
+            ${(() => {
+              const config = this.configs.find(c => c.id === configId);
+              return config && config.databaseName && !config.isPrivate ? `
             <button 
               class="save-set-database-btn" 
               data-method="${method}"
@@ -3909,6 +4204,8 @@ class ConfigManager {
             >
               Salvar no banco de dados
             </button>
+            ` : '';
+            })()}
           </div>
           <div class="load-set-controls">
             <label for="saved-sets-${method}-${pathId}">Carregar conjunto:</label>

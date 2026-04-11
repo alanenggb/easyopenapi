@@ -109,3 +109,33 @@ COMMENT ON COLUMN custom_endpoints.example_body IS 'Exemplo de corpo da requisi�
 COMMENT ON COLUMN custom_endpoints.example_result IS 'Exemplo de resposta para documentação';
 COMMENT ON COLUMN custom_endpoints.created_by IS 'Conta do usuário que criou o endpoint';
 COMMENT ON COLUMN custom_endpoints.created_at IS 'Data de criação do endpoint';
+
+-- Tabela para armazenar configurações
+CREATE TABLE IF NOT EXISTS configurations (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    url VARCHAR(500),
+    use_default_auth BOOLEAN DEFAULT false,
+    headers JSONB,
+    database_name VARCHAR(255),
+    is_private BOOLEAN DEFAULT true,
+    created_by VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Índice para configurações
+CREATE INDEX IF NOT EXISTS idx_configurations_url ON configurations (url);
+
+-- Comentários para documentação
+COMMENT ON TABLE configurations IS 'Configurações de APIs (privadas ou públicas)';
+COMMENT ON COLUMN configurations.id IS 'Identificador único da configuração';
+COMMENT ON COLUMN configurations.name IS 'Nome descritivo da configuração';
+COMMENT ON COLUMN configurations.url IS 'URL base da API';
+COMMENT ON COLUMN configurations.use_default_auth IS 'Usa autenticação gcloud padrão';
+COMMENT ON COLUMN configurations.headers IS 'Headers personalizados em formato JSON';
+COMMENT ON COLUMN configurations.database_name IS 'Nome do secret GCP com credenciais PostgreSQL';
+COMMENT ON COLUMN configurations.is_private IS 'Se true, configuração é salva apenas localmente';
+COMMENT ON COLUMN configurations.created_by IS 'Conta do usuário que criou';
+COMMENT ON COLUMN configurations.created_at IS 'Data de criação da configuração';
+COMMENT ON COLUMN configurations.updated_at IS 'Data da última atualização da configuração';

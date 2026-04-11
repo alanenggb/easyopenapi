@@ -71,6 +71,20 @@ struct CustomEndpoint {
     created_by: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ConfigurationRecord {
+    id: String,
+    name: String,
+    url: Option<String>,
+    use_default_auth: bool,
+    headers: serde_json::Value,
+    database_name: Option<String>,
+    is_private: bool,
+    created_by: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 // Cache de conexões PostgreSQL
 #[derive(Clone)]
 struct PostgresConnectionCache {
@@ -707,6 +721,31 @@ async fn create_postgres_tables(secret_name: String, connection_cache: tauri::St
         .execute(&pool)
         .await
         .map_err(|e| format!("Failed to create custom_endpoints index: {}", e))?;
+    
+    // Criar tabela de configurações
+    sqlx::query(r#"
+        CREATE TABLE IF NOT EXISTS configurations (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            url VARCHAR(500),
+            use_default_auth BOOLEAN DEFAULT false,
+            headers JSONB,
+            database_name VARCHAR(255),
+            is_private BOOLEAN DEFAULT true,
+            created_by VARCHAR(255),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    "#)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to create configurations table: {}", e))?;
+    
+    // Criar índice para configurações
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_configurations_url ON configurations (url)")
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to create configurations index: {}", e))?;
     
     Ok("PostgreSQL tables created successfully".to_string())
 }
@@ -1744,6 +1783,128 @@ async fn delete_config(
     }
 }
 
+#[tauri::command]
+async fn save_config_to_postgres(
+    secret_name: String,
+    config_data: serde_json::Value,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+) -> Result<String, String> {
+    // Extrair dados da configuração
+    let id = config_data.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing id")?
+        .to_string();
+    
+    let name = config_data.get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing name")?
+        .to_string();
+    
+    let url = config_data.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let use_default_auth = config_data.get("useDefaultAuth").and_then(|v| v.as_bool()).unwrap_or(false);
+    let headers = config_data.get("headers").unwrap_or(&serde_json::json!([])).clone();
+    let database_name = config_data.get("databaseName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let is_private = config_data.get("isPrivate").and_then(|v| v.as_bool()).unwrap_or(true);
+    let created_by = config_data.get("created_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            // Fallback to gcloud account if not specified
+            // Note: This is async context, but we can't easily call get_gcloud_account here
+            // For now, use "unknown" as fallback
+            "unknown"
+        })
+        .to_string();
+    
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+    
+    // Inserir ou atualizar configuração
+    sqlx::query(r#"
+        INSERT INTO configurations (id, name, url, use_default_auth, headers, database_name, is_private, created_by, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+            name = EXCLUDED.name,
+            url = EXCLUDED.url,
+            use_default_auth = EXCLUDED.use_default_auth,
+            headers = EXCLUDED.headers,
+            database_name = EXCLUDED.database_name,
+            is_private = EXCLUDED.is_private,
+            updated_at = NOW()
+    "#)
+    .bind(&id)
+    .bind(&name)
+    .bind(&url)
+    .bind(use_default_auth)
+    .bind(&headers)
+    .bind(&database_name)
+    .bind(is_private)
+    .bind(&created_by)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to save configuration to PostgreSQL: {}", e))?;
+    
+    Ok(id)
+}
+
+#[tauri::command]
+async fn list_postgres_configs(
+    secret_name: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+    
+    let rows = sqlx::query(r#"
+        SELECT id, name, url, use_default_auth, headers, database_name, is_private, created_by, created_at, updated_at
+        FROM configurations
+        ORDER BY created_at DESC
+    "#)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to fetch configurations from PostgreSQL: {}", e))?;
+    
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for row in rows {
+        let config_json = serde_json::json!({
+            "id": row.get::<String, &str>("id"),
+            "name": row.get::<String, &str>("name"),
+            "url": row.get::<Option<String>, &str>("url"),
+            "useDefaultAuth": row.get::<bool, &str>("use_default_auth"),
+            "headers": row.get::<serde_json::Value, &str>("headers"),
+            "databaseName": row.get::<Option<String>, &str>("database_name"),
+            "isPrivate": row.get::<bool, &str>("is_private"),
+            "created_by": row.get::<String, &str>("created_by"),
+            "createdAt": row.get::<chrono::DateTime<chrono::Utc>, &str>("created_at").to_rfc3339(),
+            "updatedAt": row.get::<chrono::DateTime<chrono::Utc>, &str>("updated_at").to_rfc3339(),
+            "isInDatabase": true
+        });
+        results.push(config_json);
+    }
+    
+    Ok(results)
+}
+
+#[tauri::command]
+async fn delete_config_from_postgres(
+    secret_name: String,
+    config_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+) -> Result<bool, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+    
+    let result = sqlx::query("DELETE FROM configurations WHERE id = $1")
+        .bind(&config_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to delete configuration from PostgreSQL: {}", e))?;
+    
+    Ok(result.rows_affected() > 0)
+}
+
 // Helper functions for app data sync
 fn load_app_data_sync(app: &tauri::AppHandle, key: &str) -> Result<serde_json::Value, String> {
     use tauri_plugin_store::StoreBuilder;
@@ -1903,7 +2064,10 @@ pub fn run() {
             list_custom_endpoints,
             delete_custom_endpoint,
             update_custom_endpoint,
-            delete_config
+            delete_config,
+            save_config_to_postgres,
+            list_postgres_configs,
+            delete_config_from_postgres
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

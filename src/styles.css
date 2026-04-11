@@ -473,6 +473,62 @@ body {
   color: #e9ecef;
 }
 
+/* Config grouping styles */
+.config-group {
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.config-group-header {
+  background: var(--background-light);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.config-group-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.config-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.config-status-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.config-status-badge.private {
+  background: #6c757d;
+  color: white;
+}
+
+.config-status-badge.online {
+  background: #28a745;
+  color: white;
+}
+
+.config-status-badge.local {
+  background: #17a2b8;
+  color: white;
+}
+
+.disabled-checkbox {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 [data-theme="dark"] .history-source-select {
   background: var(--background-light);
   color: #e9ecef;
