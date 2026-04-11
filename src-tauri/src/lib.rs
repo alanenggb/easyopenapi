@@ -1486,25 +1486,31 @@ async fn save_custom_endpoint(
 #[tauri::command]
 async fn list_custom_endpoints(
     config_id: String,
+    database_name: Option<String>,
     connection_cache: tauri::State<'_, PostgresConnectionCache>,
     config_cache: tauri::State<'_, PostgresConfigCache>,
     app: tauri::AppHandle,
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut all_endpoints: Vec<serde_json::Value> = vec![];
     
-    // Verificar se config tem databaseName
-    let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
-    let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
-    let config = configs.iter()
-        .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+    // Se database_name não foi fornecido, tentar obter do config local
+    let db_name = if database_name.is_none() {
+        let config_data = load_app_data_sync(&app, "openapiui-configurations")?;
+        let configs: Vec<serde_json::Value> = serde_json::from_value(config_data).unwrap_or_default();
+        let config = configs.iter()
+            .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(&config_id));
+        
+        config
+            .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
+            .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())))
+            .map(|s| s.to_string())
+    } else {
+        database_name
+    };
     
-    let database_name = config
-        .and_then(|c| c.get("databaseName").and_then(|v| v.as_str()))
-        .or_else(|| config.and_then(|c| c.get("gcpSecretName").and_then(|v| v.as_str())));
-    
-    if let Some(db_name) = database_name {
+    if let Some(db_name) = db_name {
         // Carregar do banco de dados
-        let pg_config = get_postgres_config(db_name.to_string(), config_cache).await?;
+        let pg_config = get_postgres_config(db_name, config_cache).await?;
         let pool = connection_cache.get_connection(&pg_config).await?;
         
         let rows = sqlx::query(

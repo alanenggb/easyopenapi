@@ -115,6 +115,21 @@
               <p class="empty-state">Nenhuma configuração adicionada ainda.</p>
             </div>
           </section>
+
+          <section class="database-secrets-section">
+            <h3>Secrets de Banco de Dados</h3>
+            <p class="section-description">Adicione secrets do GCP para carregar configurações salvas no banco de dados.</p>
+            <div class="form-group">
+              <label for="database-secret-input">Nome do Secret</label>
+              <div class="input-with-button">
+                <input id="database-secret-input" type="text" placeholder="nome-do-secret" />
+                <button id="add-database-secret-btn" type="button">Adicionar</button>
+              </div>
+            </div>
+            <div id="database-secrets-list" class="database-secrets-list">
+              <p class="empty-state">Nenhum secret adicionado ainda.</p>
+            </div>
+          </section>
         </div>
       </div>
     </div>

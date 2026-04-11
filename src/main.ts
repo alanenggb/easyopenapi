@@ -100,11 +100,13 @@ class ConfigManager {
   private readonly SAVED_RESULTS_KEY = 'openapiui-saved-results';
   private readonly THEME_KEY = 'openapiui-theme';
   private readonly FONT_SIZE_KEY = 'openapiui-font-size';
+  private readonly DATABASE_SECRETS_KEY = 'openapiui-database-secrets';
   private defaultBodyValues = new Map<string, string>();
   private readonly APP_VERSION = '0.1.9'; // Versão atual do aplicativo
   private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
   private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
   private pendingConfig: Configuration | null = null; // Configuração pendente de sincronização
+  private databaseSecrets: string[] = []; // Lista de nomes de secrets de banco de dados
 
   private elements = {
     configForm: document.querySelector("#config-form") as HTMLFormElement,
@@ -157,6 +159,9 @@ class ConfigManager {
     confirmSyncBtn: document.querySelector("#confirm-sync-btn") as HTMLButtonElement,
     cancelSyncBtn: document.querySelector("#cancel-sync-btn") as HTMLButtonElement,
     closeSyncModalBtn: document.querySelector("#close-sync-modal") as HTMLButtonElement,
+    databaseSecretInput: document.querySelector("#database-secret-input") as HTMLInputElement,
+    addDatabaseSecretBtn: document.querySelector("#add-database-secret-btn") as HTMLButtonElement,
+    databaseSecretsList: document.querySelector("#database-secrets-list") as HTMLDivElement,
   };
 
   async init() {
@@ -167,11 +172,13 @@ class ConfigManager {
       this.loadSavedResults(),
       this.loadTheme(),
       this.loadFontSize(),
-      this.loadGcloudUser() // Carregar usuário gcloud no cache
+      this.loadGcloudUser(),
+      this.loadDatabaseSecrets()
     ]);
     this.setupEventListeners();
     this.updateConfigSelect();
     this.renderConfigs();
+    this.renderDatabaseSecrets();
 
     // Atualizar título da janela ao iniciar
     await this.updateWindowTitle();
@@ -273,6 +280,11 @@ class ConfigManager {
       this.hideSyncModal();
     });
 
+    // Database secrets management
+    this.elements.addDatabaseSecretBtn.addEventListener("click", () => {
+      this.addDatabaseSecret();
+    });
+
     this.elements.customEndpointForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       await this.handleCustomEndpointSubmit();
@@ -344,6 +356,96 @@ class ConfigManager {
       console.warn('Could not load gcloud user on startup:', error);
       this.cachedGcloudUser = null;
     }
+  }
+
+  private async loadDatabaseSecrets() {
+    try {
+      const stored = await invoke<any>('load_app_data', { key: this.DATABASE_SECRETS_KEY });
+      if (stored && Array.isArray(stored)) {
+        this.databaseSecrets = stored;
+      } else {
+        this.databaseSecrets = [];
+      }
+    } catch (error) {
+      console.error('Failed to load database secrets:', error);
+      this.databaseSecrets = [];
+    }
+  }
+
+  private async saveDatabaseSecrets() {
+    try {
+      await invoke('save_app_data', {
+        key: this.DATABASE_SECRETS_KEY,
+        value: this.databaseSecrets
+      });
+    } catch (error) {
+      console.error('Failed to save database secrets:', error);
+    }
+  }
+
+  private async addDatabaseSecret() {
+    const secretName = this.elements.databaseSecretInput.value.trim();
+    if (!secretName) {
+      this.showToast('Por favor, digite um nome para o secret.', 'error');
+      return;
+    }
+
+    if (this.databaseSecrets.includes(secretName)) {
+      this.showToast('Este secret já foi adicionado.', 'error');
+      return;
+    }
+
+    this.databaseSecrets.push(secretName);
+    await this.saveDatabaseSecrets();
+    this.renderDatabaseSecrets();
+    this.elements.databaseSecretInput.value = '';
+    this.showToast('Secret adicionado com sucesso!', 'success');
+    
+    // Reload configurations from all databases
+    await this.loadConfigs();
+    this.updateConfigSelect();
+    this.renderConfigs();
+  }
+
+  private async removeDatabaseSecret(secretName: string) {
+    const confirmed = await this.showConfirmDialog(`Tem certeza que deseja remover o secret "${secretName}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    this.databaseSecrets = this.databaseSecrets.filter(s => s !== secretName);
+    await this.saveDatabaseSecrets();
+    this.renderDatabaseSecrets();
+    this.showToast('Secret removido com sucesso!', 'success');
+    
+    // Reload configurations from remaining databases
+    await this.loadConfigs();
+    this.updateConfigSelect();
+    this.renderConfigs();
+  }
+
+  private renderDatabaseSecrets() {
+    if (this.databaseSecrets.length === 0) {
+      this.elements.databaseSecretsList.innerHTML = '<p class="empty-state">Nenhum secret adicionado ainda.</p>';
+      return;
+    }
+
+    this.elements.databaseSecretsList.innerHTML = this.databaseSecrets.map(secret => `
+      <div class="database-secret-item">
+        <span>${this.escapeHtml(secret)}</span>
+        <button class="remove-secret-btn" data-secret="${this.escapeHtml(secret)}">Remover</button>
+      </div>
+    `).join('');
+
+    // Add event listeners for remove buttons
+    document.querySelectorAll('.remove-secret-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const secret = (e.target as HTMLElement).dataset.secret;
+        if (secret) {
+          this.removeDatabaseSecret(secret);
+        }
+      });
+    });
   }
 
   private async loadConfigs() {
@@ -420,21 +522,36 @@ class ConfigManager {
         }
       });
 
+      // If no database names found in local configs, use the databaseSecrets list
+      // This allows loading configs from database even if no local configs exist
+      if (uniqueDatabaseNames.size === 0 && this.databaseSecrets.length > 0) {
+        this.databaseSecrets.forEach(dbName => uniqueDatabaseNames.add(dbName));
+        console.log('No database names in local configs, using databaseSecrets list:', Array.from(uniqueDatabaseNames));
+      }
+
+      console.log('Loading online configs from databases:', Array.from(uniqueDatabaseNames));
+
       for (const dbName of uniqueDatabaseNames) {
         try {
+          console.log(`Loading configs from database: ${dbName}`);
           const onlineConfigs = await invoke<any>('list_postgres_configs', { secretName: dbName });
+          console.log(`Loaded ${onlineConfigs?.length || 0} configs from database ${dbName}`);
+          
           if (onlineConfigs && Array.isArray(onlineConfigs)) {
             // Merge online configs with local configs
             onlineConfigs.forEach((onlineConfig: Configuration) => {
+              console.log('Processing online config:', onlineConfig.id, onlineConfig.name);
               const existingIndex = this.configs.findIndex(c => c.id === onlineConfig.id);
               if (existingIndex !== -1) {
                 // Update existing config with database info
                 this.configs[existingIndex].isInDatabase = true;
                 this.configs[existingIndex].isPrivate = onlineConfig.isPrivate;
+                console.log('Updated existing config with database info');
               } else {
                 // Add new config from database
                 onlineConfig.isInDatabase = true;
                 this.configs.push(onlineConfig);
+                console.log('Added new config from database');
               }
             });
           }
@@ -443,6 +560,8 @@ class ConfigManager {
           // Fallback to local configs only
         }
       }
+
+      console.log('Total configs after merge:', this.configs.length);
     } catch (error) {
       console.error('Failed to load configs:', error);
       this.configs = [];
@@ -722,7 +841,10 @@ class ConfigManager {
 
   private async loadCustomEndpoints(config: Configuration) {
     try {
-      const endpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+      const endpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { 
+        configId: config.id,
+        databaseName: config.databaseName
+      });
       await this.displayCustomEndpoints(config, endpoints);
     } catch (error) {
       console.error('Failed to load custom endpoints:', error);
@@ -1306,7 +1428,8 @@ class ConfigManager {
     document.querySelectorAll('.delete-endpoint-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const endpointId = (e.currentTarget as HTMLElement).dataset.endpointId;
-        if (confirm('Tem certeza que deseja excluir este endpoint?')) {
+        const confirmed = await this.showConfirmDialog('Tem certeza que deseja excluir este endpoint?');
+        if (confirmed) {
           try {
             await invoke('delete_custom_endpoint', {
               configId: config.id,
@@ -2196,7 +2319,10 @@ class ConfigManager {
     // Sync custom endpoints if selected
     if (syncCustomEndpoints) {
       try {
-        const customEndpoints = await invoke<any>('list_custom_endpoints', { configId: this.pendingConfig!.id });
+        const customEndpoints = await invoke<any>('list_custom_endpoints', { 
+          configId: this.pendingConfig!.id,
+          databaseName: this.pendingConfig!.databaseName
+        });
         if (customEndpoints && Array.isArray(customEndpoints)) {
           for (const endpoint of customEndpoints) {
             await invoke('save_custom_endpoint', {
@@ -2234,6 +2360,20 @@ class ConfigManager {
   }
 
   private async deleteConfig(id: string) {
+    const config = this.configs.find(c => c.id === id);
+    if (!config) return;
+
+    // Only allow deleting private configs
+    if (config.isInDatabase || config.isPrivate === false) {
+      this.showToast('Configurações não privadas não podem ser excluídas. Use o console PostgreSQL para gerenciar os registros.', 'error');
+      return;
+    }
+
+    const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir a configuração "${config.name}"? Esta ação não pode ser desfeita.`);
+    if (!confirmed) {
+      return;
+    }
+
     this.configs = this.configs.filter(c => c.id !== id);
     await this.saveConfigs();
     this.updateConfigSelect();
@@ -2438,7 +2578,10 @@ class ConfigManager {
       return;
     }
 
-    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { 
+      configId: config.id,
+      databaseName: config.databaseName
+    });
     const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
     if (!endpoint) {
       this.showToast('Endpoint não encontrado.', 'error');
@@ -2702,7 +2845,10 @@ class ConfigManager {
       return;
     }
 
-    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+    const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { 
+      configId: config.id,
+      databaseName: config.databaseName
+    });
     const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
     if (!endpoint) {
       this.showToast('Endpoint não encontrado.', 'error');
@@ -2811,7 +2957,10 @@ class ConfigManager {
     }
 
     try {
-      const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { configId: config.id });
+      const customEndpoints = await invoke<CustomEndpoint[]>('list_custom_endpoints', { 
+        configId: config.id,
+        databaseName: config.databaseName
+      });
       
       const endpoint = customEndpoints.find((e: CustomEndpoint) => e.id === endpointId);
       if (!endpoint) {
