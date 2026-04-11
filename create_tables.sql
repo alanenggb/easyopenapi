@@ -1,5 +1,5 @@
 -- =====================================================
--- OpenAPI UI - PostgreSQL Schema
+-- EasyOpenAPI - PostgreSQL Schema
 -- =====================================================
 
 -- Tabela para armazenar conjuntos de valores salvos

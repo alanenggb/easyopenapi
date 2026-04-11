@@ -99,7 +99,7 @@ class ConfigManager {
   private readonly THEME_KEY = 'openapiui-theme';
   private readonly FONT_SIZE_KEY = 'openapiui-font-size';
   private defaultBodyValues = new Map<string, string>();
-  private readonly APP_VERSION = '0.1.8'; // Versão atual do aplicativo
+  private readonly APP_VERSION = '0.1.9'; // Versão atual do aplicativo
   private cachedGcloudUser: string | null = null; // Cache para usuário gcloud
   private databaseError: string | null = null; // Armazena erro de acesso ao banco de dados
 
@@ -559,7 +559,7 @@ class ConfigManager {
     if (!configId) {
       this.elements.welcomeScreen.style.display = 'block';
       this.elements.welcomeScreen.innerHTML = `
-        <h2>Bem-vindo ao OpenAPI UI</h2>
+        <h2>Bem-vindo ao EasyOpenAPI</h2>
         <p>Selecione uma configuração no menu superior ou clique em "Editar Configurações" para gerenciar suas APIs.</p>
       `;
       this.elements.reloadSpecBtn.disabled = true;

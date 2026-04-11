@@ -1,4 +1,4 @@
-# OpenAPI UI
+# EasyOpenAPI
 
 Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Tauri e TypeScript.
 
@@ -6,6 +6,7 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 
 ### 📋 Gerenciamento de Configurações
 - **Múltiplas Configurações**: Adicione e gerencie várias configurações de APIs
+- **Configurações Customizadas**: Crie configurações sem URL OpenAPI para adicionar endpoints manualmente
 - **Autenticação padrão**: Suporte para autenticação gcloud (executa gcloud auth print-identity-token e inclui no header Authorization automaticamente)
 - **Interface Intuitiva**: Formulário simples para adicionar/editar configurações de API
 
@@ -14,6 +15,12 @@ Uma aplicação desktop para testar e explorar APIs OpenAPI construída com Taur
 - **Interface Rica**: Visualização detalhada de todos os endpoints disponíveis
 - **Filtros Inteligentes**: Exclui automaticamente endpoints "Root" para melhor visualização
 - **Informações Completas**: Exibe título, versão, descrição e URL base da API
+
+### ✏️ Endpoints Customizados
+- **Criação Manual**: Adicione endpoints manualmente em configurações customizadas
+- **Parâmetros Flexíveis**: Suporte para path parameters, query parameters e body JSON
+- **Exemplos de Documentação**: Adicione exemplos de corpo e resposta para documentação
+- **Gerenciamento Completo**: Edite e exclua endpoints customizados
 
 ### 🧪 Teste de Endpoints
 - **Teste Interativo**: Interface completa para testar todos os métodos HTTP
@@ -67,6 +74,14 @@ O usuário pode visualizar o histórico de testes salvos, com filtro de endpoint
 
 ![Busca no Histórico](images/easyopenapi_busca_historico.png)
 
+### Configuração Customizada
+Crie configurações sem URL OpenAPI para adicionar endpoints manualmente
+![Configuração Customizada](images/easyopenapi_custom_config.png)
+
+### Endpoint Customizado
+Adicione endpoints manualmente com parâmetros flexíveis
+![Endpoint Customizado](images/easyopenapi_custom_endpoint.png)
+
 ## 🛠️ Tecnologias
 
 - **Frontend**: TypeScript, Vite, HTML5, CSS3
@@ -79,8 +94,12 @@ O usuário pode visualizar o histórico de testes salvos, com filtro de endpoint
 ### Baixe o executável em releases
 
 1. **Adicionar Configuração**: Clique em "Editar Configurações" e adicione sua API
+   - Para APIs com OpenAPI: Preencha a URL da API
+   - Para configurações customizadas: Deixe a URL em branco para adicionar endpoints manualmente
 2. **Selecionar API**: Escolha a configuração no menu superior
-3. **Explorar Endpoints**: Visualize todos os endpoints disponíveis
+3. **Explorar Endpoints**: 
+   - Para APIs com OpenAPI: Visualize todos os endpoints disponíveis automaticamente
+   - Para configurações customizadas: Clique em "+ Adicionar Endpoint Customizado" para criar endpoints manualmente
 4. **Testar API**: Preencha os parâmetros e clique em "Testar"
 5. **Salvar Dados**: Opcionalmente salve conjuntos de valores e resultados para uso futuro
 6. **Visualizar Histórico**: Acesse o histórico completo dos testes salvos
@@ -91,6 +110,7 @@ O aplicativo utiliza armazenamento nativo do Tauri (app_data_dir) para persistê
 
 ### Estrutura de Armazenamento
 - **Configurações**: Configurações de APIs (URL, nome, tipo de autenticação)
+- **Endpoints Customizados**: Endpoints definidos manualmente para configurações sem OpenAPI
 - **Conjuntos Salvos**: Conjuntos de parâmetros e body salvos por endpoint
 - **Resultados**: Histórico completo de testes realizados
 - **Tema**: Preferência de tema (claro/escuro)
