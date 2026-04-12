@@ -1307,6 +1307,53 @@ body {
   transform: translateY(0);
 }
 
+/* Sync Buttons */
+#confirm-sync-btn {
+  background: var(--secondary-color);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s;
+  white-space: nowrap;
+}
+
+#confirm-sync-btn:hover {
+  background: var(--secondary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(16, 129, 99, 0.3);
+}
+
+#confirm-sync-btn:active {
+  transform: translateY(0);
+}
+
+#cancel-sync-btn {
+  background: var(--danger-color);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s;
+  white-space: nowrap;
+}
+
+#cancel-sync-btn:hover {
+  background: var(--danger-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(220, 53, 69, 0.3);
+}
+
+#cancel-sync-btn:active {
+  transform: translateY(0);
+}
+
 /* Conteúdo OpenAPI */
 .openapi-content {
   padding: 1rem 2rem 2rem 2rem;
