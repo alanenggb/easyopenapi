@@ -473,27 +473,6 @@ body {
   color: #e9ecef;
 }
 
-/* Config grouping styles */
-.config-group {
-  margin-bottom: 1.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.config-group-header {
-  background: var(--background-light);
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.config-group-header h4 {
-  margin: 0;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
 .config-title-row {
   display: flex;
   justify-content: space-between;
@@ -839,6 +818,35 @@ body {
 }
 
 .global-history-btn:active {
+  transform: translateY(0);
+}
+
+.edit-config-btn {
+  background: var(--secondary-color);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  pointer-events: auto !important;
+  z-index: 10;
+}
+
+.edit-config-btn:hover {
+  background: var(--secondary-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(245, 101, 101, 0.3);
+}
+
+.edit-config-btn:active {
   transform: translateY(0);
 }
 
@@ -2862,6 +2870,10 @@ span.method-type.patch {
 [data-theme="dark"] .test-result.error {
   background: #2a1a1a;
   border: 1px solid #5d2d2d;
+}
+
+[data-theme="dark"] .test-error pre {
+  color: #fff;
 }
 
 [data-theme="dark"] .test-error {

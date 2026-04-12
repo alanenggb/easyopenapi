@@ -196,6 +196,18 @@ class ConfigManager {
       }
     });
 
+    // Event delegation for edit-config-btn (edit selected config)
+    document.body.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const editBtn = target.closest('.edit-config-btn');
+      if (editBtn) {
+        const configId = (editBtn as HTMLElement).dataset.configId;
+        if (configId) {
+          this.editConfig(configId);
+        }
+      }
+    });
+
     // Form de configuração
     this.elements.configForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -213,6 +225,7 @@ class ConfigManager {
 
     // Modal
     this.elements.editConfigsBtn.addEventListener("click", () => {
+      this.resetForm();
       this.showModal();
     });
 
@@ -733,7 +746,11 @@ class ConfigManager {
     this.configs.forEach(config => {
       const option = document.createElement('option');
       option.value = config.id;
-      option.textContent = config.name;
+      // Add prefix based on config location
+      const prefix = config.isInDatabase && config.databaseName
+        ? `[DB][${this.escapeHtml(config.databaseName)}] `
+        : '[L] ';
+      option.textContent = prefix + config.name;
       this.elements.configSelect.appendChild(option);
     });
   }
@@ -815,6 +832,13 @@ class ConfigManager {
                 
               ` : ''}
             </div>
+            <button 
+              class="edit-config-btn" 
+              data-config-id="${config.id}"
+              title="Editar configuração"
+            >
+              ✏️ Editar
+            </button>
             <button 
               class="global-history-btn" 
               data-config-id="${config.id}"
@@ -951,7 +975,6 @@ class ConfigManager {
           <p><strong>Título:</strong> ${this.escapeHtml(spec.info?.title || 'N/A')}</p>
           <p><strong>Versão:</strong> ${this.escapeHtml(spec.info?.version || 'N/A')}</p>
           <p><strong>Descrição:</strong> ${this.escapeHtml(spec.info?.description || 'N/A')}</p>
-          <p><strong>Base URL:</strong> ${this.escapeHtml(spec.servers?.[0]?.url || 'N/A')}</p>
         </div>
         
         ${spec.paths ? `
@@ -1317,15 +1340,11 @@ class ConfigManager {
     
     if (endpoints.length === 0) {
       openApiContent.innerHTML = `
-        <div class="selected-config">
-          <div class="config-header">
-            ${config.url ? `
-            <div class="config-info">
-              <h3>${this.escapeHtml(config.name)}</h3>
-              <p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>
-              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
-            </div>
-            ` : ''}
+      <div class="config-header">
+      <div class="selected-config">
+            <button class="edit-config-btn" data-config-id="${config.id}" title="Editar configuração">
+              ✏️ Editar
+            </button>
             <button id="add-custom-endpoint-btn" class="add-custom-endpoint-btn" data-config-id="${config.id}">
               + Adicionar Endpoint Customizado
             </button>
@@ -1356,9 +1375,6 @@ class ConfigManager {
             <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'gcloud' : 'não'}</p>
           </div>
           ` : ''}
-          <button class="global-history-btn" data-config-id="${config.id}" title="Ver histórico de resultados">
-            📋 Histórico
-          </button>
           <button id="add-custom-endpoint-btn" class="add-custom-endpoint-btn" data-config-id="${config.id}">
             + Adicionar Endpoint Customizado
           </button>
@@ -2021,8 +2037,8 @@ class ConfigManager {
       }
     }
 
-    // If converting from private to non-private
-    if (originalIsPrivate && !isPrivate) {
+    // If converting from private to non-private (only when editing existing config)
+    if (this.editingId && originalIsPrivate && !isPrivate) {
       if (!databaseName) {
         // No database secret configured - save locally and show alert
         this.showToast('Para salvar configurações no banco de dados, configure um Secret GCP.', 'error');
@@ -2030,14 +2046,14 @@ class ConfigManager {
       } else {
         // Has database secret - show sync modal
         this.pendingConfig = {
-          id: this.editingId || (url ? this.normalizeUrlToId(url) : this.generateUUID()),
+          id: this.editingId,
           name,
           url: url || undefined,
           databaseName,
           useDefaultAuth,
           headers,
           isPrivate: false,
-          created_by: this.editingId ? this.configs.find(c => c.id === this.editingId)?.created_by || currentUser : currentUser
+          created_by: this.configs.find(c => c.id === this.editingId)?.created_by || currentUser
         };
         this.showSyncModal();
         return; // Wait for sync modal confirmation
@@ -2069,7 +2085,7 @@ class ConfigManager {
         databaseName,
         useDefaultAuth,
         headers,
-        isPrivate: true, // Default to private for new configs
+        isPrivate,
         created_by: currentUser
       };
       this.configs.push(newConfig);
@@ -2107,6 +2123,13 @@ class ConfigManager {
       this.handleConfigSelection(''); // Chamar diretamente para atualizar a interface
     }
     
+    // Add secret name to databaseSecrets if not already there
+    if (databaseName && !this.databaseSecrets.includes(databaseName)) {
+      this.databaseSecrets.push(databaseName);
+      await this.saveDatabaseSecrets();
+      this.renderDatabaseSecrets();
+    }
+    
     this.updateConfigSelect();
     this.renderConfigs();
     this.resetForm();
@@ -2118,6 +2141,7 @@ class ConfigManager {
     this.editingId = null;
     this.elements.submitBtn.textContent = 'Adicionar Configuração';
     this.elements.cancelBtn.classList.add('hidden');
+    this.elements.privateCheckbox.disabled = false;
   }
 
   private renderConfigs() {
@@ -2126,60 +2150,47 @@ class ConfigManager {
       return;
     }
 
-    // Group configs by URL
-    const groupedConfigs = new Map<string, Configuration[]>();
-    this.configs.forEach(config => {
-      const url = config.url || 'custom';
-      if (!groupedConfigs.has(url)) {
-        groupedConfigs.set(url, []);
-      }
-      groupedConfigs.get(url)!.push(config);
-    });
-
     let html = '';
-    groupedConfigs.forEach((configs, url) => {
-      const urlLabel = url === 'custom' ? 'Configurações Customizadas' : this.escapeHtml(url);
+    this.configs.forEach(config => {
+      // Add prefix based on config location
+      const prefix = config.isInDatabase && config.databaseName
+        ? `[DB][${this.escapeHtml(config.databaseName)}] `
+        : '[L] ';
+      
+      const displayName = prefix + this.escapeHtml(config.name);
+
+      const statusBadge = config.isPrivate 
+        ? '<span class="config-status-badge private">Privada</span>' 
+        : config.isInDatabase 
+          ? '<span class="config-status-badge online">Online</span>' 
+          : '<span class="config-status-badge local">Local</span>';
+
       html += `
-        <div class="config-group">
-          <div class="config-group-header">
-            <h4>${urlLabel}</h4>
-          </div>
-      `;
-
-      configs.forEach(config => {
-        const statusBadge = config.isPrivate 
-          ? '<span class="config-status-badge private">Privada</span>' 
-          : config.isInDatabase 
-            ? '<span class="config-status-badge online">Online</span>' 
-            : '<span class="config-status-badge local">Local</span>';
-
-        html += `
-          <div class="config-item" data-id="${config.id}">
-            <div class="config-details">
-              <div class="config-title-row">
-                <h4>${this.escapeHtml(config.name)}</h4>
-                ${statusBadge}
+        <div class="config-item" data-id="${config.id}">
+          <div class="config-details">
+            <div class="config-title-row">
+              <h4>${displayName}</h4>
+              ${statusBadge}
+            </div>
+            <p><strong>ID:</strong> ${this.escapeHtml(config.id)}</p>
+            <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
+            ${config.url ? `<p><strong>URL:</strong> ${this.escapeHtml(config.url)}</p>` : ''}
+            ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
+            ${config.headers && config.headers.length > 0 ? `
+              <p><strong>Headers:</strong></p>
+              <div class="config-headers">
+                ${config.headers.map(header => 
+                  `<span class="config-header">${this.escapeHtml(header.name)}: ${this.escapeHtml(header.value)}</span>`
+                ).join('')}
               </div>
-              <p><strong>Autenticação:</strong> ${config.useDefaultAuth ? 'Padrão' : 'Custom'}</p>
-              ${config.databaseName ? `<p><strong>Banco de Dados:</strong> ${this.escapeHtml(config.databaseName)}</p>` : ''}
-              ${config.headers && config.headers.length > 0 ? `
-                <p><strong>Headers:</strong></p>
-                <div class="config-headers">
-                  ${config.headers.map(header => 
-                    `<span class="config-header">${this.escapeHtml(header.name)}: ${this.escapeHtml(header.value)}</span>`
-                  ).join('')}
-                </div>
-              ` : ''}
-            </div>
-            <div class="config-actions">
-              <button class="edit-btn" data-id="${config.id}">Editar</button>
-              <button class="delete-btn" data-id="${config.id}">Excluir</button>
-            </div>
+            ` : ''}
           </div>
-        `;
-      });
-
-      html += '</div>';
+          <div class="config-actions">
+            <button class="edit-btn" data-id="${config.id}">Editar</button>
+            <button class="delete-btn" data-id="${config.id}">Excluir</button>
+          </div>
+        </div>
+      `;
     });
 
     this.elements.configsList.innerHTML = html;
@@ -2234,6 +2245,7 @@ class ConfigManager {
     this.elements.cancelBtn.classList.remove('hidden');
     
     this.elements.nameInput.focus();
+    this.showModal();
   }
 
   private showSyncModal() {
@@ -2348,6 +2360,14 @@ class ConfigManager {
     }
 
     await this.saveConfigs();
+    
+    // Add secret name to databaseSecrets if not already there
+    if (this.pendingConfig.databaseName && !this.databaseSecrets.includes(this.pendingConfig.databaseName)) {
+      this.databaseSecrets.push(this.pendingConfig.databaseName);
+      await this.saveDatabaseSecrets();
+      this.renderDatabaseSecrets();
+    }
+    
     this.updateConfigSelect();
     this.renderConfigs();
     this.resetForm();
@@ -2363,9 +2383,9 @@ class ConfigManager {
     const config = this.configs.find(c => c.id === id);
     if (!config) return;
 
-    // Only allow deleting private configs
-    if (config.isInDatabase || config.isPrivate === false) {
-      this.showToast('Configurações não privadas não podem ser excluídas. Use o console PostgreSQL para gerenciar os registros.', 'error');
+    // Only allow deleting local configs (not in database)
+    if (config.isInDatabase) {
+      this.showToast('Configurações salvas no banco de dados não podem ser excluídas pelo app. Use o console PostgreSQL para gerenciar os registros.', 'error');
       return;
     }
 
