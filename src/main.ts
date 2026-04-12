@@ -1342,9 +1342,6 @@ class ConfigManager {
       openApiContent.innerHTML = `
       <div class="config-header">
       <div class="selected-config">
-            <button class="edit-config-btn" data-config-id="${config.id}" title="Editar configuração">
-              ✏️ Editar
-            </button>
             <button id="add-custom-endpoint-btn" class="add-custom-endpoint-btn" data-config-id="${config.id}">
               + Adicionar Endpoint Customizado
             </button>
@@ -2383,21 +2380,75 @@ class ConfigManager {
     const config = this.configs.find(c => c.id === id);
     if (!config) return;
 
-    // Only allow deleting local configs (not in database)
+    // Handle database configs
     if (config.isInDatabase) {
-      this.showToast('Configurações salvas no banco de dados não podem ser excluídas pelo app. Use o console PostgreSQL para gerenciar os registros.', 'error');
-      return;
-    }
+      const dbName = config.databaseName || config.gcpSecretName;
+      if (!dbName) {
+        this.showToast('Configuração não possui nome de banco de dados', 'error');
+        return;
+      }
 
-    const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir a configuração "${config.name}"? Esta ação não pode ser desfeita.`);
-    if (!confirmed) {
-      return;
-    }
+      // Check if config is non-private
+      if (config.isPrivate === false) {
+        try {
+          const affectedUsers = await invoke<string[]>('get_config_affected_users', {
+            secretName: dbName,
+            configId: id
+          });
 
-    this.configs = this.configs.filter(c => c.id !== id);
-    await this.saveConfigs();
-    this.updateConfigSelect();
-    this.renderConfigs();
+          if (affectedUsers.length > 0) {
+            const usersList = affectedUsers.map(u => `• ${u}`).join('\n');
+            const message = `Tem certeza que deseja excluir a configuração "${config.name}"?\n\n⚠️ Esta configuração é pública e os seguintes usuários têm dados salvos:\n${usersList}\n\nTodos os dados (conjuntos de valores, resultados de testes e endpoints customizados) serão permanentemente excluídos para todos os usuários.`;
+            const confirmed = await this.showConfirmDialog(message);
+            if (!confirmed) {
+              return;
+            }
+          } else {
+            const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir a configuração "${config.name}"? Esta ação não pode ser desfeita.`);
+            if (!confirmed) {
+              return;
+            }
+          }
+        } catch (error) {
+          console.error('Failed to check affected users:', error);
+          this.showToast('Erro ao verificar usuários afetados', 'error');
+          return;
+        }
+      } else {
+        // Private config - simple confirmation
+        const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir a configuração "${config.name}"? Esta ação não pode ser desfeita.`);
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      try {
+        await invoke('delete_config_from_postgres', {
+          secretName: dbName,
+          configId: id
+        });
+        this.showToast('Configuração excluída com sucesso', 'success');
+        // Remove from local configs array and update UI
+        this.configs = this.configs.filter(c => c.id !== id);
+        this.updateConfigSelect();
+        this.renderConfigs();
+      } catch (error) {
+        console.error('Failed to delete config from database:', error);
+        this.showToast('Erro ao excluir configuração do banco de dados', 'error');
+        return;
+      }
+    } else {
+      // Handle local configs
+      const confirmed = await this.showConfirmDialog(`Tem certeza que deseja excluir a configuração "${config.name}"? Esta ação não pode ser desfeita.`);
+      if (!confirmed) {
+        return;
+      }
+
+      this.configs = this.configs.filter(c => c.id !== id);
+      await this.saveConfigs();
+      this.updateConfigSelect();
+      this.renderConfigs();
+    }
   }
 
   private attachTestEventListeners() {
@@ -4523,7 +4574,7 @@ class ConfigManager {
 
       const msg = document.createElement('p');
       msg.textContent = message;
-      msg.style.cssText = 'margin:0 0 20px;font-size:14px;line-height:1.5;';
+      msg.style.cssText = 'margin:0 0 20px;font-size:14px;line-height:1.5;white-space:pre-line;';
 
       const actions = document.createElement('div');
       actions.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';

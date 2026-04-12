@@ -1893,6 +1893,64 @@ async fn list_postgres_configs(
 }
 
 #[tauri::command]
+async fn get_config_affected_users(
+    secret_name: String,
+    config_id: String,
+    connection_cache: tauri::State<'_, PostgresConnectionCache>,
+    config_cache: tauri::State<'_, PostgresConfigCache>,
+) -> Result<Vec<String>, String> {
+    let config = get_postgres_config(secret_name, config_cache).await?;
+    let pool = connection_cache.get_connection(&config).await?;
+    
+    // Get users from value_sets
+    let value_set_users = sqlx::query("SELECT DISTINCT user_account FROM value_sets WHERE config_id = $1 AND user_account IS NOT NULL")
+        .bind(&config_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to query value_sets: {}", e))?;
+    
+    // Get users from test_results
+    let test_result_users = sqlx::query("SELECT DISTINCT user_account FROM test_results WHERE config_id = $1 AND user_account IS NOT NULL")
+        .bind(&config_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to query test_results: {}", e))?;
+    
+    // Get users from custom_endpoints (created_by column)
+    let custom_endpoint_users = sqlx::query("SELECT DISTINCT created_by FROM custom_endpoints WHERE config_id = $1 AND created_by IS NOT NULL")
+        .bind(&config_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to query custom_endpoints: {}", e))?;
+    
+    // Collect all unique users
+    let mut users_set = std::collections::HashSet::new();
+    
+    for row in value_set_users {
+        if let Some(user) = row.get::<Option<String>, _>("user_account") {
+            users_set.insert(user);
+        }
+    }
+    
+    for row in test_result_users {
+        if let Some(user) = row.get::<Option<String>, _>("user_account") {
+            users_set.insert(user);
+        }
+    }
+    
+    for row in custom_endpoint_users {
+        if let Some(user) = row.get::<Option<String>, _>("created_by") {
+            users_set.insert(user);
+        }
+    }
+    
+    let mut users: Vec<String> = users_set.into_iter().collect();
+    users.sort();
+    
+    Ok(users)
+}
+
+#[tauri::command]
 async fn delete_config_from_postgres(
     secret_name: String,
     config_id: String,
@@ -1902,6 +1960,29 @@ async fn delete_config_from_postgres(
     let config = get_postgres_config(secret_name, config_cache).await?;
     let pool = connection_cache.get_connection(&config).await?;
     
+    // Delete all associated data in correct order (due to potential foreign keys)
+    // Delete value_sets
+    sqlx::query("DELETE FROM value_sets WHERE config_id = $1")
+        .bind(&config_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to delete value_sets: {}", e))?;
+    
+    // Delete test_results
+    sqlx::query("DELETE FROM test_results WHERE config_id = $1")
+        .bind(&config_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to delete test_results: {}", e))?;
+    
+    // Delete custom_endpoints
+    sqlx::query("DELETE FROM custom_endpoints WHERE config_id = $1")
+        .bind(&config_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to delete custom_endpoints: {}", e))?;
+    
+    // Finally delete the configuration
     let result = sqlx::query("DELETE FROM configurations WHERE id = $1")
         .bind(&config_id)
         .execute(&pool)
@@ -1999,20 +2080,27 @@ pub fn run() {
             
             // Restaurar posição e tamanho da janela ao iniciar
             let store_result = tauri_plugin_store::StoreBuilder::new(app, std::path::PathBuf::from(".window-state.json")).build();
-            
+
             if let Ok(store) = store_result {
                 if let Some(state) = store.get("window_state") {
                     if let Some(x) = state.get("x").and_then(|v: &serde_json::Value| v.as_f64()) {
                         if let Some(y) = state.get("y").and_then(|v: &serde_json::Value| v.as_f64()) {
                             if let Some(width) = state.get("width").and_then(|v: &serde_json::Value| v.as_f64()) {
                                 if let Some(height) = state.get("height").and_then(|v: &serde_json::Value| v.as_f64()) {
+                                    let maximized = state.get("maximized").and_then(|v| v.as_bool()).unwrap_or(false);
+
                                     // Aplicar posição salva
                                     let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: x as i32, y: y as i32 }));
-                                    
+
                                     // Aplicar tamanho com pequeno ajuste para compensar barras do sistema
                                     let adjusted_width = (width as u32).saturating_sub(16); // Compensar bordas
                                     let adjusted_height = (height as u32).saturating_sub(8); // Compensar bordas
                                     let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: adjusted_width, height: adjusted_height }));
+
+                                    // Restaurar estado maximizado se estava salvo
+                                    if maximized {
+                                        let _ = window.maximize();
+                                    }
                                 }
                             }
                         }
@@ -2024,14 +2112,32 @@ pub fn run() {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
                     match event {
-                        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                        tauri::WindowEvent::Resized(_) => {
                             if let Ok(pos) = window_clone.outer_position() {
                                 if let Ok(size) = window_clone.outer_size() {
+                                    let is_maximized = window_clone.is_maximized().unwrap_or(false);
                                     let state = serde_json::json!({
                                         "x": pos.x,
                                         "y": pos.y,
                                         "width": size.width,
-                                        "height": size.height
+                                        "height": size.height,
+                                        "maximized": is_maximized
+                                    });
+                                    let _ = store_clone.set("window_state", state);
+                                    let _ = store_clone.save();
+                                }
+                            }
+                        }
+                        tauri::WindowEvent::Moved(_) => {
+                            if let Ok(pos) = window_clone.outer_position() {
+                                if let Ok(size) = window_clone.outer_size() {
+                                    let is_maximized = window_clone.is_maximized().unwrap_or(false);
+                                    let state = serde_json::json!({
+                                        "x": pos.x,
+                                        "y": pos.y,
+                                        "width": size.width,
+                                        "height": size.height,
+                                        "maximized": is_maximized
                                     });
                                     let _ = store_clone.set("window_state", state);
                                     let _ = store_clone.save();
@@ -2073,6 +2179,7 @@ pub fn run() {
             delete_config,
             save_config_to_postgres,
             list_postgres_configs,
+            get_config_affected_users,
             delete_config_from_postgres
         ])
         .run(tauri::generate_context!())
