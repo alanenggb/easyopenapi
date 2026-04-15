@@ -56,9 +56,12 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Extract version from the tag name (easyopenapi-vX.X.X)
-          $TAG_NAME = "easyopenapi-v__VERSION__"
-          $VERSION = $TAG_NAME -replace "easyopenapi-v", ""
+          # Get the tag name from the latest release
+          $LATEST_RELEASE = gh release view --repo alanenggb/easyopenapi --json tagName -q ".tagName"
+          Write-Host "Latest release tag: $LATEST_RELEASE"
+          
+          # Extract version from tag (easyopenapi-vX.X.X)
+          $VERSION = $LATEST_RELEASE -replace "easyopenapi-v", ""
           Write-Host "Generating latest.json for version $VERSION"
           
           # Create a temporary Node.js script to generate latest.json
@@ -96,6 +99,6 @@ jobs:
           Write-Host "Uploading latest.json for version $VERSION"
           
           # Upload latest.json to the release
-          gh release upload "easyopenapi-v$VERSION" latest.json --repo alanenggb/easyopenapi
+          gh release upload "$LATEST_RELEASE" latest.json --repo alanenggb/easyopenapi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
