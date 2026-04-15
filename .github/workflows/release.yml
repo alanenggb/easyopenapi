@@ -56,49 +56,42 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          # Extract version from the tag name (easyopenapi-vX.X.X)
+          $TAG_NAME = "easyopenapi-v__VERSION__"
+          $VERSION = $TAG_NAME -replace "easyopenapi-v", ""
+          Write-Host "Generating latest.json for version $VERSION"
+          
           # Create a temporary Node.js script to generate latest.json
           $script = @'
           const fs = require('fs');
-          const tauriConf = require('./src-tauri/tauri.conf.json');
-          const version = tauriConf.version;
+          const version = process.env.VERSION;
           const latestJson = {
             version: version,
             notes: "EasyOpenAPI v" + version,
             pub_date: new Date().toISOString(),
             platforms: {
               "windows-x86_64": {
-                signature: "",
                 url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64-setup.exe"
               },
               "darwin-x86_64": {
-                signature: "",
                 url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64.dmg"
               },
               "darwin-aarch64": {
-                signature: "",
                 url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_aarch64.dmg"
               },
               "linux-x86_64": {
-                signature: "",
                 url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/easyopenapi_" + version + "_amd64.AppImage"
               }
             }
           };
           fs.writeFileSync("latest.json", JSON.stringify(latestJson, null, 2));
           console.log("latest.json created successfully for version " + version);
-          console.log("VERSION=" + version);
           '@
           
           Write-Host "Generating latest.json..."
           $script | Out-File -FilePath "generate-latest.cjs" -Encoding utf8
+          $env:VERSION = $VERSION
           node generate-latest.cjs
-          
-          # Get version from script output
-          $VERSION = Select-String -Path "generate-latest.cjs" -Pattern "version = tauriConf.version" | ForEach-Object { $_.Line }
-          
-          # Alternative: extract version from the generated latest.json
-          $latestJson = Get-Content "latest.json" | ConvertFrom-Json
-          $VERSION = $latestJson.version
           
           Write-Host "Uploading latest.json for version $VERSION"
           
