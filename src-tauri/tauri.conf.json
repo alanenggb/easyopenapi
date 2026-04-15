@@ -32,5 +32,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/alanenggb/easyopenapi/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyNDU4MzM1RDIwRjE3OTcKUldSQk1hV0JYVzJYUDBsZzFjNzV6aTNxNjJRa1h5VzJjNnN4YUxyMlZLSHJNTm5KZG1VdGkK"
+    }
   }
 }

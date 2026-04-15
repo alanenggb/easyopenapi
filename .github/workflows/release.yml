@@ -51,3 +51,42 @@ jobs:
           releaseName: "EasyOpenAPI v__VERSION__"
           releaseDraft: true
           prerelease: false
+
+      - name: Generate and upload latest.json for updater
+        if: matrix.platform == 'windows-latest'
+        run: |
+          # Get version from tauri.conf.json
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "Generating latest.json for version $VERSION"
+          
+          # Create latest.json with the correct format
+          cat > latest.json << EOF
+          {
+            "version": "$VERSION",
+            "notes": "EasyOpenAPI v$VERSION",
+            "pub_date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "",
+                "url": "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v$VERSION/EasyOpenAPI_${VERSION}_x64-setup.exe"
+              },
+              "darwin-x86_64": {
+                "signature": "",
+                "url": "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v$VERSION/EasyOpenAPI_${VERSION}_x64.dmg"
+              },
+              "darwin-aarch64": {
+                "signature": "",
+                "url": "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v$VERSION/EasyOpenAPI_${VERSION}_aarch64.dmg"
+              },
+              "linux-x86_64": {
+                "signature": "",
+                "url": "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v$VERSION/easyopenapi_${VERSION}_amd64.AppImage"
+              }
+            }
+          }
+          EOF
+          
+          # Upload latest.json to the release
+          gh release upload "easyopenapi-v$VERSION" latest.json --repo alanenggb/easyopenapi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

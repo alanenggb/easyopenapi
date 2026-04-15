@@ -45,6 +45,9 @@
               <div class="dropdown-section">
                 <button id="about-btn" class="about-btn" title="Sobre">ℹ️ Sobre</button>
               </div>
+              <div class="dropdown-section">
+                <button id="check-update-btn" class="check-update-btn" title="Verificar Atualizações">🔄 Verificar Atualizações</button>
+              </div>
             </div>
           </div>
           
@@ -173,6 +176,38 @@
             <div class="license-info">
               <h4>Licença MIT</h4>
               <p>Verifique o repositório para mais informações.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal de Atualização -->
+    <div id="update-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Atualização Disponível</h2>
+          <button id="close-update-modal" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+          <div class="update-content">
+            <div class="update-info">
+              <h3>Nova versão disponível: <span id="new-version"></span></h3>
+              <p>Versão atual: <span id="current-version"></span></p>
+              <div id="update-notes" class="update-notes"></div>
+            </div>
+            
+            <div class="update-actions">
+              <button id="install-update-btn" class="install-update-btn">Instalar Agora</button>
+              <button id="later-update-btn" class="later-update-btn">Depois</button>
+            </div>
+            
+            <div id="update-progress" class="update-progress hidden">
+              <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+              </div>
+              <p id="progress-text">Baixando atualização...</p>
             </div>
           </div>
         </div>

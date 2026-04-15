@@ -136,6 +136,17 @@ class ConfigManager {
     closeModalBtn: document.querySelector("#close-modal") as HTMLButtonElement,
     aboutModal: document.querySelector("#about-modal") as HTMLDivElement,
     closeAboutModalBtn: document.querySelector("#close-about-modal") as HTMLButtonElement,
+    updateModal: document.querySelector("#update-modal") as HTMLDivElement,
+    closeUpdateModalBtn: document.querySelector("#close-update-modal") as HTMLButtonElement,
+    checkUpdateBtn: document.querySelector("#check-update-btn") as HTMLButtonElement,
+    installUpdateBtn: document.querySelector("#install-update-btn") as HTMLButtonElement,
+    laterUpdateBtn: document.querySelector("#later-update-btn") as HTMLButtonElement,
+    updateProgress: document.querySelector("#update-progress") as HTMLDivElement,
+    progressFill: document.querySelector("#progress-fill") as HTMLDivElement,
+    progressText: document.querySelector("#progress-text") as HTMLParagraphElement,
+    newVersion: document.querySelector("#new-version") as HTMLSpanElement,
+    currentVersion: document.querySelector("#current-version") as HTMLSpanElement,
+    updateNotes: document.querySelector("#update-notes") as HTMLDivElement,
     welcomeScreen: document.querySelector("#welcome-screen") as HTMLDivElement,
     customEndpointModal: document.querySelector("#custom-endpoint-modal") as HTMLDivElement,
     closeCustomEndpointModalBtn: document.querySelector("#close-custom-endpoint-modal") as HTMLButtonElement,
@@ -182,6 +193,12 @@ class ConfigManager {
     this.updateConfigSelect();
     this.renderConfigs();
     this.renderDatabaseSecrets();
+    
+    // Verificar updates ao iniciar
+    this.checkForUpdatesOnStartup();
+    
+    // Configurar verificação periódica (24h)
+    this.setupPeriodicUpdateCheck();
 
     // Atualizar título da janela ao iniciar
     await this.updateWindowTitle();
@@ -266,6 +283,23 @@ class ConfigManager {
 
     this.elements.closeAboutModalBtn.addEventListener("click", () => {
       this.hideAboutModal();
+    });
+
+    // Modal de Atualização
+    this.elements.checkUpdateBtn.addEventListener("click", () => {
+      this.checkForUpdates();
+    });
+
+    this.elements.closeUpdateModalBtn.addEventListener("click", () => {
+      this.hideUpdateModal();
+    });
+
+    this.elements.installUpdateBtn.addEventListener("click", () => {
+      this.installUpdate();
+    });
+
+    this.elements.laterUpdateBtn.addEventListener("click", () => {
+      this.hideUpdateModal();
     });
 
     this.elements.closeModalBtn.addEventListener("click", () => {
@@ -1221,6 +1255,117 @@ class ConfigManager {
     }
   }
 
+  private showAboutModal() {
+    this.elements.aboutModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    this.loadAppVersion();
+  }
+
+  private hideAboutModal() {
+    this.elements.aboutModal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  private showUpdateModal(newVersion: string, currentVersion: string, body: string) {
+    this.elements.newVersion.textContent = newVersion;
+    this.elements.currentVersion.textContent = currentVersion;
+    this.elements.updateNotes.innerHTML = body || 'Sem notas de atualização disponíveis.';
+    this.elements.updateModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  private hideUpdateModal() {
+    this.elements.updateModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    this.elements.updateProgress.classList.add('hidden');
+  }
+
+  private async checkForUpdates() {
+    const originalText = this.elements.checkUpdateBtn.textContent;
+    this.elements.checkUpdateBtn.disabled = true;
+    this.elements.checkUpdateBtn.textContent = '🔄 Verificando...';
+    
+    try {
+      const result = await invoke<{ available: boolean; version?: string; body?: string; date?: string }>('check_for_update');
+      
+      if (result.available) {
+        const currentVersion = await invoke<string>('get_current_version');
+        this.showUpdateModal(result.version || 'desconhecida', currentVersion, result.body || '');
+      } else {
+        this.showToast('Você já está usando a versão mais recente!', 'success');
+      }
+    } catch (error) {
+      const errorMessage = String(error);
+      console.error('Erro ao verificar atualizações:', error);
+      
+      // Não mostrar erro se for porque não há releases disponíveis (situação normal)
+      if (errorMessage.includes('Could not fetch a valid release JSON') || 
+          errorMessage.includes('Failed to check for updates')) {
+        this.showToast('Nenhuma atualização disponível.', 'success');
+      } else {
+        this.showToast('Erro ao verificar atualizações. Tente novamente.', 'error');
+      }
+    } finally {
+      this.elements.checkUpdateBtn.disabled = false;
+      this.elements.checkUpdateBtn.textContent = originalText;
+    }
+  }
+
+  private async installUpdate() {
+    try {
+      this.elements.installUpdateBtn.disabled = true;
+      this.elements.laterUpdateBtn.disabled = true;
+      this.elements.updateProgress.classList.remove('hidden');
+      this.elements.progressText.textContent = 'Baixando e instalando atualização...';
+      this.elements.progressFill.style.width = '50%';
+      
+      await invoke('install_update');
+      
+      this.elements.progressFill.style.width = '100%';
+      this.elements.progressText.textContent = 'Atualização instalada com sucesso!';
+      
+      setTimeout(() => {
+        this.hideUpdateModal();
+      }, 2000);
+    } catch (error) {
+      console.error('Erro ao instalar atualização:', error);
+      alert('Erro ao instalar atualização. Verifique o console para detalhes.');
+      this.elements.installUpdateBtn.disabled = false;
+      this.elements.laterUpdateBtn.disabled = false;
+      this.elements.updateProgress.classList.add('hidden');
+    }
+  }
+
+  private async checkForUpdatesOnStartup() {
+    try {
+      const result = await invoke<{ available: boolean; version?: string; body?: string; date?: string }>('check_for_update');
+      
+      if (result.available) {
+        const currentVersion = await invoke<string>('get_current_version');
+        this.showUpdateModal(result.version || 'desconhecida', currentVersion, result.body || '');
+      }
+    } catch (error) {
+      // Silenciar erros na inicialização para não incomodar o usuário
+      console.log('Verificação de update ao iniciar: update não disponível ou erro ao verificar');
+    }
+  }
+
+  private setupPeriodicUpdateCheck() {
+    // Verificar updates a cada 24 horas (86400000ms)
+    setInterval(async () => {
+      try {
+        const result = await invoke<{ available: boolean; version?: string; body?: string; date?: string }>('check_for_update');
+        
+        if (result.available) {
+          const currentVersion = await invoke<string>('get_current_version');
+          this.showUpdateModal(result.version || 'desconhecida', currentVersion, result.body || '');
+        }
+      } catch (error) {
+        console.error('Erro na verificação periódica de updates:', error);
+      }
+    }, 86400000); // 24 horas
+  }
+
   private showModal() {
     this.elements.configModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
@@ -1229,12 +1374,6 @@ class ConfigManager {
   private hideModal() {
     this.elements.configModal.classList.add('hidden');
     document.body.style.overflow = '';
-  }
-
-  private showAboutModal() {
-    this.elements.aboutModal.classList.remove('hidden');
-    document.body.style.overflow = 'hidden';
-    this.loadAppVersion();
   }
 
   private async loadAppVersion() {
@@ -1264,11 +1403,6 @@ class ConfigManager {
         }
       }
     }
-  }
-
-  private hideAboutModal() {
-    this.elements.aboutModal.classList.add('hidden');
-    document.body.style.overflow = '';
   }
 
   private hideCustomEndpointModal() {
