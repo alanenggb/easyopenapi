@@ -56,13 +56,45 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Get version from tauri.conf.json
-          $VERSION = node -p "require('./src-tauri/tauri.conf.json').version"
-          Write-Host "Generating latest.json for version $VERSION"
+          # Create a temporary Node.js script to generate latest.json
+          $script = @'
+          const fs = require('fs');
+          const tauriConf = require('./src-tauri/tauri.conf.json');
+          const version = tauriConf.version;
+          const latestJson = {
+            version: version,
+            notes: "EasyOpenAPI v" + version,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "windows-x86_64": {
+                signature: "",
+                url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64-setup.exe"
+              },
+              "darwin-x86_64": {
+                signature: "",
+                url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64.dmg"
+              },
+              "darwin-aarch64": {
+                signature: "",
+                url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_aarch64.dmg"
+              },
+              "linux-x86_64": {
+                signature: "",
+                url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/easyopenapi_" + version + "_amd64.AppImage"
+              }
+            }
+          };
+          fs.writeFileSync("latest.json", JSON.stringify(latestJson, null, 2));
+          console.log("latest.json created successfully for version " + version);
+          '@
           
-          # Create latest.json using Node.js (works on all platforms)
-          # Use single quotes in PowerShell to avoid interpolation
-          node -e 'const fs = require("fs"); const version = process.env.VERSION; const latestJson = { version: version, notes: "EasyOpenAPI v" + version, pub_date: new Date().toISOString(), platforms: { "windows-x86_64": { signature: "", url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64-setup.exe" }, "darwin-x86_64": { signature: "", url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_x64.dmg" }, "darwin-aarch64": { signature: "", url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/EasyOpenAPI_" + version + "_aarch64.dmg" }, "linux-x86_64": { signature: "", url: "https://github.com/alanenggb/easyopenapi/releases/download/easyopenapi-v" + version + "/easyopenapi_" + version + "_amd64.AppImage" } } }; fs.writeFileSync("latest.json", JSON.stringify(latestJson, null, 2)); console.log("latest.json created successfully");' -e VERSION="$VERSION"
+          Write-Host "Generating latest.json..."
+          $script | Out-File -FilePath "generate-latest.js" -Encoding utf8
+          node generate-latest.js
+          
+          # Get version for upload
+          $VERSION = node -p "require('./src-tauri/tauri.conf.json').version"
+          Write-Host "Uploading latest.json for version $VERSION"
           
           # Upload latest.json to the release
           gh release upload "easyopenapi-v$VERSION" latest.json --repo alanenggb/easyopenapi
