@@ -878,7 +878,7 @@ class ConfigManager {
     if (!configId) {
       this.elements.welcomeScreen.style.display = 'block';
       this.elements.welcomeScreen.innerHTML = `
-        <h2>Bem-vindo ao EasyOpenAPI</h2>
+        <h2>Boas vindas ao EasyOpenAPI</h2>
         <p>Selecione uma configuração no menu superior ou clique em "Editar Configurações" para gerenciar suas APIs.</p>
       `;
       this.elements.reloadSpecBtn.disabled = true;
