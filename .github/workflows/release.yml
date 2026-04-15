@@ -56,13 +56,13 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # Get the tag name from the latest release
-          $LATEST_RELEASE = gh release view --repo alanenggb/easyopenapi --json tagName -q ".tagName"
-          Write-Host "Latest release tag: $LATEST_RELEASE"
-          
-          # Extract version from tag (easyopenapi-vX.X.X)
-          $VERSION = $LATEST_RELEASE -replace "easyopenapi-v", ""
+          # Get version from tauri.conf.json
+          $VERSION = node -p "require('./src-tauri/tauri.conf.json').version"
           Write-Host "Generating latest.json for version $VERSION"
+          
+          # Construct the tag name
+          $TAG_NAME = "easyopenapi-v$VERSION"
+          Write-Host "Release tag: $TAG_NAME"
           
           # Create a temporary Node.js script to generate latest.json
           $script = @'
@@ -99,6 +99,6 @@ jobs:
           Write-Host "Uploading latest.json for version $VERSION"
           
           # Upload latest.json to the release
-          gh release upload "$LATEST_RELEASE" latest.json --repo alanenggb/easyopenapi
+          gh release upload "$TAG_NAME" latest.json --repo alanenggb/easyopenapi --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
