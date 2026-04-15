@@ -172,6 +172,23 @@ body {
   justify-content: center;
 }
 
+.data-directory-btn {
+  background: var(--primary-color);
+  color: white;
+  padding: 0.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: calc(1rem * var(--font-size-multiplier, 1));
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.25s;
+  min-width: 44px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .edit-configs-btn:hover {
   background: var(--secondary-hover);
   transform: translateY(-1px);
@@ -210,6 +227,11 @@ body {
 }
 
 .theme-toggle-btn:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.data-directory-btn:hover {
   background: var(--primary-hover);
   transform: translateY(-1px);
 }
@@ -305,7 +327,8 @@ body {
 }
 
 .dropdown-section .theme-toggle-btn,
-.dropdown-section .about-btn {
+.dropdown-section .about-btn,
+.dropdown-section .data-directory-btn {
   width: 100%;
   justify-content: flex-start;
   padding: 0.5rem 1rem;
@@ -313,6 +336,19 @@ body {
   min-width: auto;
   height: auto;
   font-size: calc(0.9rem * var(--font-size-multiplier, 1));
+}
+
+.current-directory {
+  margin-top: 0.5rem;
+  font-size: calc(0.8rem * var(--font-size-multiplier, 1));
+  color: var(--text-muted);
+  padding: 0.25rem 0.5rem;
+  background: var(--background-dark);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-all;
 }
 
 /* Ajustes específicos para Dark Mode */

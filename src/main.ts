@@ -127,6 +127,8 @@ class ConfigManager {
     devtoolsBtn: document.querySelector("#devtools-btn") as HTMLButtonElement,
     themeToggleBtn: document.querySelector("#theme-toggle-btn") as HTMLButtonElement,
     aboutBtn: document.querySelector("#about-btn") as HTMLButtonElement,
+    dataDirectoryBtn: document.querySelector("#data-directory-btn") as HTMLButtonElement,
+    currentDirectory: document.querySelector("#current-directory") as HTMLDivElement,
     extrasMenu: document.querySelector(".extras-menu") as HTMLDivElement,
     extrasMenuBtn: document.querySelector("#extras-menu-btn") as HTMLButtonElement,
     extrasDropdown: document.querySelector("#extras-dropdown") as HTMLDivElement,
@@ -173,7 +175,8 @@ class ConfigManager {
       this.loadTheme(),
       this.loadFontSize(),
       this.loadGcloudUser(),
-      this.loadDatabaseSecrets()
+      this.loadDatabaseSecrets(),
+      this.loadCurrentDataDirectory()
     ]);
     this.setupEventListeners();
     this.updateConfigSelect();
@@ -239,6 +242,10 @@ class ConfigManager {
 
     this.elements.themeToggleBtn.addEventListener("click", () => {
       this.toggleTheme();
+    });
+
+    this.elements.dataDirectoryBtn.addEventListener("click", () => {
+      this.handleChangeDataDirectory();
     });
 
     // Menu de Opções Extras
@@ -393,6 +400,78 @@ class ConfigManager {
       });
     } catch (error) {
       console.error('Failed to save database secrets:', error);
+    }
+  }
+
+  private async loadCurrentDataDirectory() {
+    try {
+      const currentDir = await invoke<string>('get_data_directory');
+      // Truncar o path se for muito longo para exibição
+      const displayPath = currentDir.length > 50
+        ? '...' + currentDir.slice(-47)
+        : currentDir;
+      this.elements.currentDirectory.textContent = displayPath;
+      this.elements.currentDirectory.title = currentDir;
+    } catch (error) {
+      console.error('Failed to load current data directory:', error);
+      this.elements.currentDirectory.textContent = 'Diretório padrão';
+    }
+  }
+
+  private async handleChangeDataDirectory() {
+    try {
+      // Abrir diálogo de seleção de diretório
+      const selectedDir = await invoke<string | null>('select_data_directory');
+
+      if (!selectedDir) {
+        // Usuário cancelou
+        return;
+      }
+
+      // Confirmar migração de dados
+      const shouldMigrate = confirm(
+        `Deseja migrar os dados existentes para o novo diretório?\n\n` +
+        `Diretório selecionado:\n${selectedDir}\n\n` +
+        `Se você escolher "Não", os dados atuais serão perdidos.`
+      );
+
+      if (shouldMigrate) {
+        // Migrar dados
+        const result = await invoke<any>('migrate_app_data', { newDirectory: selectedDir });
+
+        if (result.success) {
+          alert(
+            `Dados migrados com sucesso!\n\n` +
+            `Arquivos copiados: ${result.copied_files.length}\n\n` +
+            `Reinicie a aplicação para aplicar as alterações.`
+          );
+        } else {
+          alert(
+            `Erro ao migrar dados:\n\n` +
+            result.errors.join('\n')
+          );
+          return;
+        }
+      }
+
+      // Salvar o novo diretório
+      await invoke('set_data_directory', { directory: selectedDir });
+
+      // Atualizar exibição
+      const displayPath = selectedDir.length > 50
+        ? '...' + selectedDir.slice(-47)
+        : selectedDir;
+      this.elements.currentDirectory.textContent = displayPath;
+      this.elements.currentDirectory.title = selectedDir;
+
+      alert(
+        `Diretório de dados alterado com sucesso!\n\n` +
+        `Novo diretório: ${selectedDir}\n\n` +
+        `Reinicie a aplicação para aplicar as alterações.`
+      );
+    } catch (error) {
+      console.error('Failed to change data directory:', error);
+      alert('Erro ao alterar diretório de dados: ' + (error as Error).message);
     }
   }
 
@@ -4240,15 +4319,6 @@ class ConfigManager {
                     <button class="copy-btn" data-target="headers-${method}-${pathId}">📋 Copiar</button>
                   </div>
                 </details>
-              </div>
-            ` : ''}
-            ${body ? `
-              <div class="test-body-section">
-                <div class="section-header">
-                  <p><strong>Body enviado:</strong></p>
-                  <button class="copy-btn" data-target="body-${method}-${pathId}">📋 Copiar</button>
-                </div>
-                <pre id="body-${method}-${pathId}" class="test-body">${this.escapeHtml(body)}</pre>
               </div>
             ` : ''}
           </div>

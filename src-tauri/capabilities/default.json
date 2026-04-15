@@ -6,11 +6,12 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "dialog:allow-open",
     "core:app:allow-fetch-data-store-identifiers",
     "core:app:allow-remove-data-store",
     "core:app:allow-register-listener",
     "core:app:allow-remove-listener",
     "core:window:default",
-    "core:window:allow-set-title" 
+    "core:window:allow-set-title"
   ]
 }

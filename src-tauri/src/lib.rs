@@ -1954,42 +1954,157 @@ async fn get_config_affected_users(
 async fn delete_config_from_postgres(
     secret_name: String,
     config_id: String,
+    user_account: String,
     connection_cache: tauri::State<'_, PostgresConnectionCache>,
     config_cache: tauri::State<'_, PostgresConfigCache>,
 ) -> Result<bool, String> {
     let config = get_postgres_config(secret_name, config_cache).await?;
     let pool = connection_cache.get_connection(&config).await?;
+
+    // Verificar se o usuário é o criador da configuração
+    let row = sqlx::query(
+        r#"SELECT created_by FROM configurations WHERE id = $1"#
+    )
+    .bind(&config_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| format!("Failed to fetch configuration: {}", e))?;
+
+    let created_by = row.get::<String, &str>("created_by");
     
-    // Delete all associated data in correct order (due to potential foreign keys)
-    // Delete value_sets
-    sqlx::query("DELETE FROM value_sets WHERE config_id = $1")
-        .bind(&config_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("Failed to delete value_sets: {}", e))?;
-    
-    // Delete test_results
-    sqlx::query("DELETE FROM test_results WHERE config_id = $1")
-        .bind(&config_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("Failed to delete test_results: {}", e))?;
-    
-    // Delete custom_endpoints
-    sqlx::query("DELETE FROM custom_endpoints WHERE config_id = $1")
-        .bind(&config_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("Failed to delete custom_endpoints: {}", e))?;
-    
-    // Finally delete the configuration
-    let result = sqlx::query("DELETE FROM configurations WHERE id = $1")
-        .bind(&config_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("Failed to delete configuration from PostgreSQL: {}", e))?;
-    
+    if created_by != user_account {
+        return Err("Você não tem permissão para excluir esta configuração".to_string());
+    }
+
+    // Excluir a configuração
+    let result = sqlx::query(
+        r#"DELETE FROM configurations WHERE id = $1"#
+    )
+    .bind(&config_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("Failed to delete configuration: {}", e))?;
+
     Ok(result.rows_affected() > 0)
+}
+
+#[tauri::command]
+async fn select_data_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    
+    // Abrir diálogo de seleção de diretório
+    let selected = app.dialog()
+        .file()
+        .blocking_pick_folder();
+    
+    match selected {
+        Some(path) => Ok(Some(path.to_string())),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+async fn get_data_directory(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_store::StoreBuilder;
+    
+    // Verificar se existe diretório customizado salvo
+    let store_result = StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    
+    if let Ok(store) = store_result {
+        if let Some(custom_dir) = store.get("data_directory") {
+            if let Some(dir_str) = custom_dir.as_str() {
+                return Ok(dir_str.to_string());
+            }
+        }
+    }
+    
+    // Retornar diretório padrão do Tauri
+    let app_data_dir = app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    
+    Ok(app_data_dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn set_data_directory(app: tauri::AppHandle, directory: String) -> Result<(), String> {
+    use tauri_plugin_store::StoreBuilder;
+    use std::fs;
+    
+    // Criar diretório se não existir
+    fs::create_dir_all(&directory)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+    
+    // Salvar no store
+    let store_result = StoreBuilder::new(&app, std::path::PathBuf::from("app-data.json")).build();
+    
+    match store_result {
+        Ok(store) => {
+            store.set("data_directory", serde_json::json!(directory));
+            if let Err(e) = store.save() {
+                return Err(format!("Failed to save store: {}", e));
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to create store: {}", e))
+    }
+}
+
+#[tauri::command]
+async fn migrate_app_data(app: tauri::AppHandle, new_directory: String) -> Result<serde_json::Value, String> {
+    use std::fs;
+    use std::path::Path;
+    
+    // Obter diretório atual
+    let current_dir = app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get current app data directory: {}", e))?;
+    
+    let new_dir = Path::new(&new_directory);
+    
+    // Verificar se diretório atual existe
+    if !current_dir.exists() {
+        return Err("Current data directory does not exist".to_string());
+    }
+    
+    // Criar novo diretório se não existir
+    fs::create_dir_all(new_dir)
+        .map_err(|e| format!("Failed to create new directory: {}", e))?;
+    
+    let mut copied_files = Vec::new();
+    let mut errors = Vec::new();
+    
+    // Copiar todos os arquivos do diretório atual para o novo
+    for entry in fs::read_dir(&current_dir)
+        .map_err(|e| format!("Failed to read current directory: {}", e))? 
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        
+        // Copiar apenas arquivos (não subdiretórios recursivamente)
+        if src_path.is_file() {
+            let file_name = src_path.file_name()
+                .ok_or("Invalid file name")?;
+            let dest_path = new_dir.join(file_name);
+            
+            match fs::copy(&src_path, &dest_path) {
+                Ok(_) => {
+                    copied_files.push(file_name.to_string_lossy().to_string());
+                }
+                Err(e) => {
+                    errors.push(format!("Failed to copy {}: {}", file_name.to_string_lossy(), e));
+                }
+            }
+        }
+    }
+    
+    Ok(serde_json::json!({
+        "success": errors.is_empty(),
+        "copied_files": copied_files,
+        "errors": errors,
+        "current_dir": current_dir.to_string_lossy().to_string(),
+        "new_dir": new_directory
+    }))
 }
 
 // Helper functions for app data sync
@@ -2067,6 +2182,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             
@@ -2180,7 +2296,11 @@ pub fn run() {
             save_config_to_postgres,
             list_postgres_configs,
             get_config_affected_users,
-            delete_config_from_postgres
+            delete_config_from_postgres,
+            select_data_directory,
+            get_data_directory,
+            set_data_directory,
+            migrate_app_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
