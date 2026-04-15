@@ -86,14 +86,20 @@ jobs:
           };
           fs.writeFileSync("latest.json", JSON.stringify(latestJson, null, 2));
           console.log("latest.json created successfully for version " + version);
+          console.log("VERSION=" + version);
           '@
           
           Write-Host "Generating latest.json..."
-          $script | Out-File -FilePath "generate-latest.js" -Encoding utf8
-          node generate-latest.js
+          $script | Out-File -FilePath "generate-latest.cjs" -Encoding utf8
+          node generate-latest.cjs
           
-          # Get version for upload
-          $VERSION = node -p "require('./src-tauri/tauri.conf.json').version"
+          # Get version from script output
+          $VERSION = Select-String -Path "generate-latest.cjs" -Pattern "version = tauriConf.version" | ForEach-Object { $_.Line }
+          
+          # Alternative: extract version from the generated latest.json
+          $latestJson = Get-Content "latest.json" | ConvertFrom-Json
+          $VERSION = $latestJson.version
+          
           Write-Host "Uploading latest.json for version $VERSION"
           
           # Upload latest.json to the release
