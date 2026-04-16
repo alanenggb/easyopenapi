@@ -91,19 +91,38 @@ jobs:
       - name: Save macOS signatures
         if: matrix.platform == 'macos-latest'
         run: |
+          # List all files in the bundle directory to debug
+          echo "Listing bundle directory contents:"
+          find src-tauri/target/release/bundle -type f -name "*.sig"
+          
           # Look for .sig files in the bundle directory
-          find src-tauri/target/release/bundle -name "*.sig" -exec sh -c 'cp "$1" "$(basename "$1" .sig).sig" .' _ {} \;
+          find src-tauri/target/release/bundle -name "*.sig" -exec cp {} . \;
+          
+          # Determine architecture
+          ARCH=$(uname -m)
+          echo "macOS architecture: $ARCH"
           
           # Rename to platform-specific names
           if [ -f "EasyOpenAPI.app.tar.gz.sig" ]; then
-            # Determine architecture
-            ARCH=$(uname -m)
             if [ "$ARCH" = "arm64" ]; then
               mv EasyOpenAPI.app.tar.gz.sig darwin-aarch64.sig
             else
               mv EasyOpenAPI.app.tar.gz.sig darwin-x86_64.sig
             fi
-            echo "Saved macOS signature for $ARCH"
+            echo "Saved macOS signature from EasyOpenAPI.app.tar.gz.sig for $ARCH"
+          elif [ -f "*.sig" ]; then
+            # If the file has a different name, try to find any .sig file
+            SIG_FILE=$(ls *.sig 2>/dev/null | head -1)
+            if [ -n "$SIG_FILE" ]; then
+              if [ "$ARCH" = "arm64" ]; then
+                mv "$SIG_FILE" darwin-aarch64.sig
+              else
+                mv "$SIG_FILE" darwin-x86_64.sig
+              fi
+              echo "Saved macOS signature from $SIG_FILE for $ARCH"
+            fi
+          else
+            echo "No .sig files found"
           fi
 
       - name: Save Linux signature
