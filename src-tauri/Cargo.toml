@@ -1,6 +1,6 @@
 [package]
 name = "easyopenapi"
-version = "0.2.18"
+version = "0.2.19"
 description = "easyopenapi"
 authors = ["alanenggb"]
 license = "MIT"
