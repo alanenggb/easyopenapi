@@ -13,7 +13,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-13
+            target: x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -89,7 +97,7 @@ jobs:
           }
 
       - name: Save macOS signatures
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-latest' || matrix.platform == 'macos-13'
         run: |
           # List all files in the bundle directory to debug
           echo "Listing bundle directory contents:"
@@ -163,11 +171,17 @@ jobs:
           name: signatures-windows-latest
           path: windows
       
-      - name: Download macOS signature
+      - name: Download macOS aarch64 signature
         uses: actions/download-artifact@v4
         with:
           name: signatures-macos-latest
-          path: macos
+          path: macos-aarch64
+      
+      - name: Download macOS x86_64 signature
+        uses: actions/download-artifact@v4
+        with:
+          name: signatures-macos-13
+          path: macos-x86_64
       
       - name: Download Linux signature
         uses: actions/download-artifact@v4
@@ -194,15 +208,15 @@ jobs:
             echo "Windows signature not found"
           fi
           
-          if [ -f "macos/darwin-x86_64.sig" ]; then
-            DARWIN_X86_64_SIG=$(cat macos/darwin-x86_64.sig)
+          if [ -f "macos-x86_64/darwin-x86_64.sig" ]; then
+            DARWIN_X86_64_SIG=$(cat macos-x86_64/darwin-x86_64.sig)
             echo "Found macOS x86_64 signature, length: ${#DARWIN_X86_64_SIG}"
           else
             echo "macOS x86_64 signature not found"
           fi
           
-          if [ -f "macos/darwin-aarch64.sig" ]; then
-            DARWIN_AARCH64_SIG=$(cat macos/darwin-aarch64.sig)
+          if [ -f "macos-aarch64/darwin-aarch64.sig" ]; then
+            DARWIN_AARCH64_SIG=$(cat macos-aarch64/darwin-aarch64.sig)
             echo "Found macOS aarch64 signature, length: ${#DARWIN_AARCH64_SIG}"
           else
             echo "macOS aarch64 signature not found"
